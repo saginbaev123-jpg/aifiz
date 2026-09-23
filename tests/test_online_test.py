@@ -72,6 +72,30 @@ class OnlineTestFlow(unittest.TestCase):
         self.assertNotIn("create_diagram",ToolRouter().plan("Еркін түсу туралы сурет салып бер").tools)
         self.assertIn("create_diagram",ToolRouter().plan("Күштің векторлық сызбасын сал").tools)
 
+    def test_pisa_semantic_paraphrase(self):
+        class StubAI:
+            available = True
+            def __init__(self, relevant):
+                self.relevant = relevant
+                self.topic_checks = 0
+            def tool_plan(self, *args, **kwargs):
+                return {"calls": [{"name": "no_visual", "arguments": {}}]}
+            def json(self, system, user):
+                if "тәуелсіз тексересің" in system:
+                    self.topic_checks += 1
+                    return {"relevant": self.relevant}
+                return {"title": "Су бетіндегі сәуле", "scenario": "Сәуле ауадан суға өткенде бағытын өзгертеді.",
+                        "visual": None, "questions": [
+                            {"q": "Сәуленің бағыты неге өзгереді?", "type": "open"},
+                            {"q": "Бұрыштарды салыстырыңыз.", "type": "open"},
+                            {"q": "Нәтижені түсіндіріңіз.", "type": "open"}]}
+        accepted = StubAI(True)
+        self.assertIsNotNone(generate_pisa(accepted, 8, "Жарықтың сынуы", visual_preference="none"))
+        self.assertEqual(accepted.topic_checks, 1)
+        rejected = StubAI(False)
+        self.assertIsNone(generate_pisa(rejected, 8, "Жарықтың сынуы", visual_preference="none"))
+        self.assertEqual(rejected.topic_checks, 5)
+
     def test_membership_video_access_and_one_submission(self):
         with tempfile.TemporaryDirectory() as directory:
             db=Database(Path(directory)/"school.db")
