@@ -270,6 +270,27 @@ def _scenario_matches_topic(topic: str, candidate: dict[str, Any]) -> bool:
     return False
 
 
+def _scenario_semantically_matches_topic(ai: AIClient, topic: str, candidate: dict[str, Any]) -> bool:
+    """Check topic relevance when the scenario uses a different wording."""
+    questions = candidate.get("questions") if isinstance(candidate.get("questions"), list) else []
+    qtext = "\n".join(str(q.get("q") or "") for q in questions if isinstance(q, dict))
+    try:
+        verdict = ai.json(
+            "Сен физика тапсырмасының тақырыпқа сәйкестігін тәуелсіз тексересің. "
+            "Тақырып сөзін жай қайталау жеткіліксіз: жағдаят пен сұрақтар осы физикалық ұғымды "
+            "шынымен қолдануы керек. Басқа тараудағы тапсырманы қабылдама. "
+            'Тек JSON қайтар: {"relevant": true немесе false}.',
+            f"Таңдалған тақырып: {topic}\n"
+            f"Жағдаят: {candidate.get('scenario') or ''}\n"
+            f"Сұрақтар:\n{qtext}\n"
+            'JSON: {"relevant": true немесе false}',
+        )
+    except Exception:
+        logger.warning("PISA semantic topic check failed", exc_info=True)
+        return False
+    return isinstance(verdict, dict) and verdict.get("relevant") is True
+
+
 def _clean_pisa_question(q: Any) -> dict[str, Any] | None:
     if not isinstance(q, dict) or not str(q.get("q") or q.get("question") or "").strip():
         return None
@@ -519,7 +540,7 @@ JSON:
                 if status is not None:
                     status["reason"] = "ЖИ жағдаятты толық бермеді."
                 continue
-            if not _scenario_matches_topic(topic, candidate):
+            if not _scenario_matches_topic(topic, candidate) and not _scenario_semantically_matches_topic(ai, topic, candidate):
                 if status is not None:
                     status["reason"] = "ЖИ берген жағдаят таңдалған тақырыпқа сәйкес келмеді."
                 continue
