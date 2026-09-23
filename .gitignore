@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.*.local
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Runtime data
+/uploads/
+/generated_files/
+/data/*.db
+/data/*.db-*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
