@@ -1,0 +1,101 @@
+<!doctype html><html lang="kk"><head><meta charset="utf-8"><style>
+body{margin:0;padding:12px;background:#f4f8ff;font:18px "Times New Roman",serif;color:#10213d}
+video{width:100%;max-height:230px;background:#10213d;border-radius:12px}video[hidden]{display:none}
+button{padding:10px 18px;border:0;border-radius:10px;background:#1769ff;color:white;font:18px "Times New Roman",serif;cursor:pointer;margin:9px 9px 6px 0}
+button:disabled{opacity:.5;cursor:not-allowed}#state{display:inline-block;color:#405f7d}
+</style></head><body>
+<video id="preview" autoplay muted playsinline hidden></video><div>
+<button id="permission" hidden>Камераға рұқсат беру</button><span id="state">Камера тексеріліп жатыр...</span></div>
+<script>
+let stream=null, recorder=null, chunks=[], mode=null, starting=false, stopping=false, finished=false, shouldStop=false, recordStart=0;
+const state=document.getElementById('state');
+const preview=document.getElementById('preview');
+const permission=document.getElementById('permission');
+const send=(type,extra={})=>window.parent.postMessage({isStreamlitMessage:true,type,...extra},'*');
+const value=(result)=>send('streamlit:setComponentValue',{dataType:'json',value:result});
+const cameraAvailable=()=>window.isSecureContext && navigator.mediaDevices && navigator.mediaDevices.getUserMedia;
+const fail=(error)=>{
+  if(stream){stream.getTracks().forEach(track=>track.stop());stream=null;}
+  starting=false;
+  const reason=!cameraAvailable()?'Камераға HTTPS мекенжайы немесе осы құрылғыдағы localhost керек.':
+    error && error.name==='NotAllowedError'?'Камераға рұқсат берілмеді. Браузер баптауын тексеріңіз.':
+    error && error.name==='NotFoundError'?'Камера табылмады. Құрылғыны қосыңыз.':
+    'Камера немесе бейнежазба қосылмады. Браузер баптауын тексеріңіз.';
+  state.textContent=reason;
+  value({error:reason});
+};
+permission.onclick=async()=>{
+  if(!cameraAvailable()){fail(null);return;}
+  try{
+    const check=await navigator.mediaDevices.getUserMedia({video:true,audio:false});
+    check.getTracks().forEach(track=>track.stop());
+    permission.disabled=true;
+    state.textContent='Камера дайын. Тестті бастауға болады.';
+    value({ready:true});
+  }catch(error){fail(error);}
+};
+async function startRecording(){
+  if(starting || recorder || finished || mode!=='record')return;
+  if(!cameraAvailable() || typeof MediaRecorder==='undefined'){fail(null);return;}
+  starting=true;
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{width:480,height:360,frameRate:10},audio:false});
+    preview.srcObject=stream;
+    const mime=['video/webm;codecs=vp8','video/webm','video/mp4'].find(x=>MediaRecorder.isTypeSupported(x));
+    if(!mime)throw new Error('Recording format unavailable');
+    recorder=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:90000});
+    chunks=[];
+    recorder.ondataavailable=event=>{if(event.data.size)chunks.push(event.data)};
+    recorder.onstop=()=>{
+      stream.getTracks().forEach(track=>track.stop());stream=null;
+      preview.srcObject=null;
+      finished=true;
+      const blob=new Blob(chunks,{type:mime.split(';')[0]});
+      if(!blob.size || blob.size>4000000){
+        state.textContent='Бейне көлемі 4 МБ-тан асты немесе жазба бос. Бұл сұрақты қайта жазу үшін бетті жаңартыңыз.';
+        value({error:state.textContent});return;
+      }
+      const reader=new FileReader();
+      reader.onload=()=>{
+        state.textContent='Жауап пен бейне сақталып жатыр...';
+        value({data:String(reader.result).split(',')[1],mime:blob.type,duration:Math.round((Date.now()-recordStart)/1000)});
+      };
+      reader.readAsDataURL(blob);
+    };
+    recorder.onerror=event=>fail(event.error);
+    recorder.start(1000);
+    recordStart=Date.now();
+    starting=false;
+    state.textContent='Осы сұрақтың бейнесі жазылып жатыр. Жауапты жібергенде өзі тоқтайды.';
+    if(shouldStop)stopRecording();
+  }catch(error){fail(error);}
+}
+function stopRecording(){
+  shouldStop=true;
+  if(!recorder || recorder.state!=='recording' || stopping)return;
+  stopping=true;
+  state.textContent='Жазба аяқталып, жауап сақталып жатыр...';
+  recorder.stop();
+}
+window.addEventListener('message',event=>{
+  if(event.source!==window.parent || !event.data || event.data.type!=='streamlit:render')return;
+  const args=event.data.args||{};
+  if(args.mode==='permission'){
+    mode='permission';permission.hidden=false;preview.hidden=true;
+    send('streamlit:setFrameHeight',{height:85});
+    state.textContent=permission.disabled?'Камера дайын. Тестті бастауға болады.':
+      'Тест басталар алдында камераға бір рет рұқсат беріңіз.';
+  }else if(args.mode==='record'){
+    mode='record';permission.hidden=true;preview.hidden=false;
+    send('streamlit:setFrameHeight',{height:290});
+    if(args.stop)stopRecording();
+    else startRecording();
+  }
+});
+window.addEventListener('beforeunload',()=>{
+  if(recorder && recorder.state==='recording')recorder.stop();
+  if(stream)stream.getTracks().forEach(track=>track.stop());
+});
+send('streamlit:componentReady',{apiVersion:1});
+send('streamlit:setFrameHeight',{height:mode==='permission'?90:290});
+</script></body></html>

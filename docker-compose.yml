@@ -1,0 +1,17 @@
+services:
+  ai-physics:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      AI_PHYSICS_DB: /app/storage/ai_physics_kz.db
+      AI_PHYSICS_UPLOAD_DIR: /app/storage/uploads
+      AI_PHYSICS_GENERATED_DIR: /app/storage/generated_files
+    volumes:
+      - ai_physics_storage:/app/storage
+
+volumes:
+  ai_physics_storage:
