@@ -121,17 +121,25 @@ class AIClient:
             return json.loads(match.group(0))
 
     def json(self, system: str, user: str) -> dict[str, Any]:
-        raw = self.text(
-            system + "\nЖауапты тек жарамды JSON объект ретінде бер. Markdown қолданба.",
-            user,
+        if not self.client:
+            raise RuntimeError("ЖИ қызметі қолжетімсіз")
+        response = self.client.responses.create(
+            model=self.model,
+            instructions=system + "\nЖауапты тек жарамды JSON объект ретінде бер. Markdown қолданба.",
+            input=self._conversation_input(user),
+            text={"format": {"type": "json_object"}},
         )
+        raw = (getattr(response, "output_text", "") or "").strip()
         try:
-            return json.loads(raw)
+            value = json.loads(raw)
         except json.JSONDecodeError:
             match = re.search(r"\{.*\}", raw, flags=re.S)
             if not match:
                 raise
-            return json.loads(match.group(0))
+            value = json.loads(match.group(0))
+        if not isinstance(value, dict):
+            raise json.JSONDecodeError("JSON object expected", raw, 0)
+        return value
 
     def image(self, prompt: str, size: str = "1536x1024") -> bytes:
         if not self.client:
