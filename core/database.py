@@ -1526,10 +1526,10 @@ class Database:
     def save_online_test_answer(self, assignment_id: int, student_id: int, item_id: int,
                                 answer: str, is_correct: bool, duration_seconds: int,
                                 video_data: bytes, video_mime: str) -> None:
-        if (not answer.strip() or not video_data or len(video_data)>4_000_000
+        if (not answer.strip() or not video_data or len(video_data)>6_000_000
             or video_mime not in {"video/webm","video/mp4"}
             or not (video_data.startswith(b"\x1a\x45\xdf\xa3") if video_mime == "video/webm" else b"ftyp" in video_data[:16])):
-            raise ValueError("Жауап пен камера бейнежазбасы қажет (4 МБ-тан аспасын)")
+            raise ValueError("Жауап пен камера бейнежазбасы қажет (6 МБ-тан аспасын)")
         with self.connect() as con:
             run = con.execute("""SELECT r.id FROM online_test_runs r JOIN assignments a ON a.id=r.assignment_id
                 JOIN class_members cm ON cm.class_id=a.class_id AND cm.student_id=r.student_id
