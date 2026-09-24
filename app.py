@@ -1732,11 +1732,20 @@ def page_student_assignments(user: dict[str, Any]) -> None:
     st.markdown("### Дәптерге орындаңыз")
     for n, item in enumerate(items, 1):
         task = item["task"]
-        st.markdown(f"**{n}.** {normalize_math(task.get('question',''))}")
+        st.markdown(f"#### {n}-тапсырма")
+        st.markdown(normalize_math(task.get('question','')))
         descriptors = clean_descriptors(task.get("descriptors"))
         if descriptors:
-            st.caption("Дескрипторлар: " + "; ".join(
-                f"{d['description']} — {d['points']} балл" for d in descriptors))
+            rubric = pd.DataFrame([
+                {"№": i, "Дескриптор": d["description"], "Балл": d["points"]}
+                for i, d in enumerate(descriptors, 1)
+            ])
+            st.markdown("**Бағалау дескрипторлары**")
+            st.dataframe(rubric, hide_index=True, use_container_width=True,
+                         column_config={"№": st.column_config.NumberColumn(width="small"),
+                                        "Дескриптор": st.column_config.TextColumn(width="large"),
+                                        "Балл": st.column_config.NumberColumn(width="small")})
+            st.caption(f"Жалпы балл: {sum(d['points'] for d in descriptors)}")
     st.caption("Барлық есепті дәптерге шығарып, анық фотоға түсіріңіз. Жүктелген сурет тексеріліп, мұғалімге жіберіледі.")
     upload = st.file_uploader("Дәптер жұмысының суреті", type=["jpg", "jpeg", "png"], key=f"work_img_{assignment['id']}")
     if upload is not None:
