@@ -128,12 +128,24 @@ if ({'true' if has_model else 'false'}) {{
   scene.add(new THREE.HemisphereLight(0xffffff,0x556380,2.7));
   const light=new THREE.DirectionalLight(0xffffff,2.1);light.position.set(2,5,4);scene.add(light);
   new GLTFLoader().load('/app/static/model.glb', gltf=>{{
-   const model=gltf.scene, pivot=new THREE.Group();scene.add(pivot);pivot.add(model);
-   // Keep the GLB's own transforms intact: this model has a rotated, negative-scale root.
-   const bounds=new THREE.Box3().setFromObject(model), size=bounds.getSize(new THREE.Vector3()), center=bounds.getCenter(new THREE.Vector3());
-   const scale=3.3/Math.max(size.y,.001);
-   pivot.scale.setScalar(scale);pivot.position.copy(center).multiplyScalar(-scale);
-   camera.position.set(0,0,6.7);camera.lookAt(0,0,0);
+   const model=gltf.scene;scene.add(model);
+   // Use the framing from the original SanAI viewer: measure again after scaling.
+   model.rotation.y=Math.PI;
+   model.updateMatrixWorld(true);
+   let bounds=new THREE.Box3().setFromObject(model);
+   const size=new THREE.Vector3(),center=new THREE.Vector3();bounds.getSize(size);
+   if(!Number.isFinite(size.y)||size.y<.001){{status.textContent='3D модель өлшемі оқылмады.';return;}}
+   model.scale.setScalar(1.7/size.y);
+   model.updateMatrixWorld(true);
+   bounds=new THREE.Box3().setFromObject(model);bounds.getSize(size);bounds.getCenter(center);
+   model.position.x-=center.x;model.position.z-=center.z;model.position.y-=bounds.min.y;
+   model.updateMatrixWorld(true);
+   bounds=new THREE.Box3().setFromObject(model);bounds.getSize(size);
+   const aspect=area.clientWidth/area.clientHeight;
+   const vertical=Math.tan(THREE.MathUtils.degToRad(camera.fov)/2);
+   const distance=Math.max(size.y/(2*vertical),size.x/(2*vertical*aspect),size.z/(2*vertical))*1.65;
+   camera.position.set(0,size.y*.55,distance);camera.lookAt(0,size.y*.5,0);
+   camera.near=.05;camera.far=Math.max(100,distance*20);camera.updateProjectionMatrix();
    area.classList.add('model-ready');status.textContent='';
    const mixer=gltf.animations.length?new THREE.AnimationMixer(model):null;
    if(mixer)mixer.clipAction(gltf.animations[0]).play();
