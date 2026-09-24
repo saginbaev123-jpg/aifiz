@@ -16,51 +16,37 @@ MODEL = Path(__file__).parent / "static" / "model22.glb"
 
 
 def _avatar(answer: str = "", voice: bytes | None = None) -> None:
-    # The model is served by Streamlit's static file handler, not embedded in the page.
+    # CSS 3D avatar works even when third-party script CDNs are unavailable.
     audio = ("data:audio/mpeg;base64," + base64.b64encode(voice).decode()) if voice else ""
     text = escape(answer, quote=True)
     components.html(f"""<!doctype html><html lang="kk"><meta charset="utf-8">
 <style>
-html,body{{margin:0;background:#09172c;color:white;font:16px sans-serif}}
-#stage{{position:relative;height:390px;overflow:hidden;border-radius:18px;background:radial-gradient(ellipse at 50% 35%,#1c4674,#09172c 72%)}}
-canvas{{display:block;width:100%;height:100%}}#hint{{position:absolute;bottom:14px;left:0;right:0;text-align:center;color:#cae0f2}}
-#speak{{background:#1769ff;color:white;border:0;border-radius:10px;padding:12px 20px;cursor:pointer;margin:12px 0;font-size:16px}}
-#speak:disabled{{opacity:.5;cursor:default}}.reply{{line-height:1.65;white-space:pre-wrap;padding:4px 12px 10px}}
-</style><div id="stage"><div id="hint">3D көмекші жүктелуде…</div></div>
+*{{box-sizing:border-box}}html,body{{margin:0;background:#09172c;color:white;font:16px sans-serif}}
+#stage{{position:relative;height:390px;overflow:hidden;border-radius:18px;background:radial-gradient(ellipse at 50% 35%,#1d5178,#09172c 72%);perspective:800px}}
+#halo{{position:absolute;left:50%;top:46%;width:270px;height:280px;transform:translate(-50%,-50%);border:2px solid #6ceaff44;border-radius:50%;box-shadow:0 0 55px #66dfff55}}
+#person{{position:absolute;left:50%;top:55%;width:210px;height:310px;transform:translate(-50%,-50%) rotateY(-8deg);transform-style:preserve-3d;animation:idle 4s ease-in-out infinite}}
+#hair-back{{position:absolute;left:47px;top:17px;width:120px;height:155px;border-radius:60px 60px 45px 45px;background:linear-gradient(90deg,#151b2c,#3a3045 50%,#141827);box-shadow:10px 8px 16px #0007}}
+#neck{{position:absolute;left:88px;top:131px;width:37px;height:45px;background:#c88769}}
+#face{{position:absolute;left:59px;top:32px;width:96px;height:118px;border-radius:47% 47% 43% 43%;background:linear-gradient(100deg,#a86652,#efbe94 45%,#d3926d 90%);box-shadow:inset -11px -4px 13px #884a3966,4px 5px 16px #0006;transform:translateZ(24px)}}
+#fringe{{position:absolute;left:54px;top:18px;width:106px;height:56px;background:linear-gradient(115deg,#171726,#42374b,#161625);border-radius:65% 65% 22% 20%;transform:translateZ(30px)}}
+.eye{{position:absolute;top:92px;width:11px;height:7px;border-radius:50%;background:#202638;transform:translateZ(40px)}}#eye1{{left:83px}}#eye2{{left:124px}}
+#mouth{{position:absolute;left:101px;top:126px;width:19px;height:4px;border-radius:50%;background:#913f4a;transform:translateZ(40px)}}
+#torso{{position:absolute;top:170px;left:32px;width:150px;height:135px;background:linear-gradient(105deg,#dbe9f1,#fff 42%,#afc7d5);clip-path:polygon(18% 0,82% 0,100% 100%,0 100%);border-radius:27px 27px 10px 10px;box-shadow:0 8px 25px #0008;transform:translateZ(8px)}}
+#shirt{{position:absolute;top:175px;left:88px;width:38px;height:105px;background:linear-gradient(90deg,#348ac1,#123d6c);clip-path:polygon(50% 0,100% 20%,65% 100%,35% 100%,0 20%);transform:translateZ(12px)}}
+#arm1,#arm2{{position:absolute;top:172px;width:31px;height:111px;border-radius:22px;background:linear-gradient(90deg,#c2d6e4,#fff);box-shadow:0 5px 12px #0005}}#arm1{{left:18px;transform:rotate(15deg)}}#arm2{{right:16px;transform:rotate(-15deg)}}
+#atom{{position:absolute;top:224px;left:124px;color:#1978b3;font-size:30px;transform:translateZ(25px)}}
+#stage.talk #mouth{{animation:talk .22s linear infinite}}#stage.talk #person{{animation:speaking .45s ease-in-out infinite}}
+@keyframes idle{{50%{{transform:translate(-50%,-51%) rotateY(8deg) rotateZ(1deg)}}}}@keyframes speaking{{50%{{transform:translate(-50%,-51%) rotateY(5deg)}}}}@keyframes talk{{50%{{height:12px;border-radius:50%}}}}
+#speak{{background:#1769ff;color:white;border:0;border-radius:10px;padding:12px 20px;cursor:pointer;margin:12px 0;font-size:16px}}#speak:disabled{{opacity:.5;cursor:default}}
+.reply{{line-height:1.65;white-space:pre-wrap;padding:4px 12px 10px}}
+</style><div id="stage"><div id="halo"></div><div id="person"><div id="hair-back"></div><div id="neck"></div><div id="arm1"></div><div id="arm2"></div><div id="torso"></div><div id="shirt"></div><div id="face"></div><div id="fringe"></div><div id="eye1" class="eye"></div><div id="eye2" class="eye"></div><div id="mouth"></div><div id="atom">⚛</div></div></div>
 <div style="text-align:center"><button id="speak" {'disabled' if not voice else ''}>▶ Жауапты тыңдау</button></div>
 <div class="reply">{text}</div>
-<script type="module">
-import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
-import {{GLTFLoader}} from 'https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
-const stage=document.querySelector('#stage'),hint=document.querySelector('#hint');
-const renderer=new THREE.WebGLRenderer({{antialias:true,alpha:true}});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setSize(stage.clientWidth,390);stage.prepend(renderer.domElement);
-const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(38,stage.clientWidth/390,.1,100);
-scene.add(new THREE.HemisphereLight(0xffffff,0x316090,2.6));
-const key=new THREE.DirectionalLight(0xffffff,3);key.position.set(2,4,5);scene.add(key);
-let avatar,clock=new THREE.Clock(),talking=false;
-new GLTFLoader().load('/app/static/model22.glb',g=>{{
- avatar=g.scene;avatar.rotation.y=Math.PI;
- const bounds=new THREE.Box3().setFromObject(avatar),size=bounds.getSize(new THREE.Vector3()),center=bounds.getCenter(new THREE.Vector3());
- avatar.position.sub(center);const scale=2.9/Math.max(size.y,.001);avatar.scale.setScalar(scale);
- scene.add(avatar);camera.position.set(0,0,5.5);camera.lookAt(0,0,0);hint.textContent='Сұрағыңызды микрофонға айтыңыз немесе жазыңыз';
-}},undefined,()=>{{
- const figure=new THREE.Group();const skin=new THREE.MeshStandardMaterial({{color:0xe9aa82}}),coat=new THREE.MeshStandardMaterial({{color:0x2996dc}}),hair=new THREE.MeshStandardMaterial({{color:0x273243}});
- const part=(geo,mat,x,y,z)=>{{const m=new THREE.Mesh(geo,mat);m.position.set(x,y,z);figure.add(m);return m}};
- part(new THREE.SphereGeometry(.39,24,16),skin,0,.8,0);part(new THREE.SphereGeometry(.42,24,16),hair,0,1.02,-.09);
- part(new THREE.CylinderGeometry(.35,.5,1.4,20),coat,0,-.15,0);
- part(new THREE.CylinderGeometry(.13,.13,1.1,12),coat,-.5,-.12,0).rotation.z=-.28;
- part(new THREE.CylinderGeometry(.13,.13,1.1,12),coat,.5,-.12,0).rotation.z=.28;
- part(new THREE.SphereGeometry(.045),new THREE.MeshStandardMaterial({{color:0x13263b}}),-.14,.83,.34);
- part(new THREE.SphereGeometry(.045),new THREE.MeshStandardMaterial({{color:0x13263b}}),.14,.83,.34);
- figure.rotation.y=.1;avatar=figure;scene.add(figure);camera.position.set(0,0,5.5);hint.textContent='Сұрағыңызды микрофонға айтыңыз немесе жазыңыз';
-}});
-function frame(){{requestAnimationFrame(frame);const t=clock.getElapsedTime();if(avatar){{avatar.rotation.y=Math.PI+Math.sin(t*(talking?4:0.75))*(talking?.09:.035);avatar.position.y=Math.sin(t*(talking?7:1.8))*(talking?.035:.016);}}renderer.render(scene,camera);}}frame();
-const btn=document.querySelector('#speak');btn.addEventListener('click',()=>{{
- const sound=new Audio('{audio}');btn.disabled=true;talking=true;
- sound.onended=sound.onerror=()=>{{talking=false;btn.disabled=false}};
- sound.play().catch(()=>{{talking=false;btn.disabled=false}});
-}});
+<script>
+const stage=document.querySelector('#stage'),btn=document.querySelector('#speak');
+btn.addEventListener('click',()=>{{const sound=new Audio('{audio}');btn.disabled=true;stage.classList.add('talk');
+const stop=()=>{{stage.classList.remove('talk');btn.disabled=false}};
+sound.onended=stop;sound.onerror=stop;sound.play().catch(stop);}});
 </script></html>""", height=530, scrolling=True)
 
 
