@@ -4,7 +4,9 @@ from __future__ import annotations
 import base64
 import hashlib
 import io
+import json
 import os
+import re
 import shutil
 import wave
 from html import escape
@@ -18,6 +20,24 @@ from config import DEFAULT_MODEL
 
 MODEL_STORAGE = Path(os.environ.get("AI_PHYSICS_STORAGE", "/app/storage")) / "sanai" / "model.glb"
 MODEL_PUBLIC = Path(__file__).resolve().parent / "static" / "model.glb"
+
+
+def _plain_formula(text: str) -> str:
+    """Keep equations legible even when the model emits TeX syntax."""
+    text = re.sub(r"\\(?:\[|\]|\(|\))", "", text)
+    text = re.sub(r"\\vec\{([^{}]+)\}", r"\1⃗", text)
+    text = re.sub(r"\\frac\{([^{}]+)\}\{([^{}]+)\}", r"(\1)/(\2)", text)
+    text = re.sub(r"_\{([0-9]+)\}", lambda m: m[1].translate(str.maketrans("0123456789", "₀₁₂₃₄₅₆₇₈₉")), text)
+    text = re.sub(r"\^\{([0-9]+)\}", lambda m: m[1].translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")), text)
+    return re.sub(r"\\(?:mathrm|text)\{([^{}]+)\}", r"\1", text).replace("\\cdot", "·").replace("\\times", "×")
+
+
+def _spoken_answer(text: str) -> str:
+    """Read explanations without attempting to pronounce raw equation markup."""
+    text = re.sub(r"\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)", " формула экранда көрсетілген. ", text)
+    text = re.sub(r"(?im)^\s*(?:формуласы|формула)\s*:\s*[^\n]*", " Формула экранда көрсетілген. ", text)
+    text = re.sub(r"\\[a-zA-Z]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def _restore_model() -> bool:
@@ -122,9 +142,23 @@ def _avatar(history: list[dict[str, str]], voice: bytes | None = None, has_model
 
 <script>
 const btn=document.querySelector('#speak');
-btn.addEventListener('click',()=>{{const sound=new Audio('{audio}');btn.disabled=true;window.sanaiTalk=true;
+let currentAudio='{audio}';
+btn.addEventListener('click',()=>{{const sound=new Audio(currentAudio);btn.disabled=true;window.sanaiTalk=true;
 const stop=()=>{{btn.disabled=false;window.sanaiTalk=false}};
 sound.onended=stop;sound.onerror=stop;sound.play().catch(stop);}});
+const voiceChannel=new BroadcastChannel('ai-physics-sanai-voice');
+voiceChannel.onmessage=({{data}})=>{{
+ if (!data || data.kind!=='voice-answer') return;
+ const thread=document.querySelector('.thread');thread.replaceChildren();
+ for(const item of data.history.slice(-12)){{
+  const card=document.createElement('article');card.className='message '+(item.role==='student'?'student':'ai');
+  const label=document.createElement('small');label.textContent=item.role==='student'?'СІЗ':'✦ SANAI';
+  const body=document.createElement('p');body.textContent=item.text;
+  card.append(label,body);thread.append(card);
+ }}
+ thread.scrollTop=thread.scrollHeight;
+ currentAudio=data.audio||'';btn.disabled=!currentAudio;
+}};
 </script>
 <script type="importmap">{{"imports":{{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}}}</script>
 <script type="module">
@@ -185,10 +219,10 @@ def _answer_question(question: str, history: list[dict[str, str]]) -> None:
     with st.spinner("Жауап дайындалуда…"):
         response = client.responses.create(
             model=DEFAULT_MODEL,
-            instructions="Сен AI Physics KZ жүйесіндегі физика пәнінің көмекшісісің. Қазақша, түсінікті және қысқа жауап бер. Қауіпті экспериментті үйде жасауға нұсқау берме.",
+            instructions="Сен AI Physics KZ жүйесіндегі физика пәнінің көмекшісісің. Қазақша, түсінікті және қысқа жауап бер. Формулаларды жай мәтінмен, Unicode таңбаларымен жаз (мысалы, F₁₂ = −F₂₁). LaTeX, \\vec, \\(, \\[, Markdown формула блоктарын қолданба. Формуладан кейін оны қазақша сөзбен түсіндір. Қауіпті экспериментті үйде жасауға нұсқау берме.",
             input=question,
         )
-        answer = response.output_text.strip()
+        answer = _plain_formula(response.output_text.strip())
         if not answer:
             raise ValueError("ЖИ бос жауап қайтарды")
     history.extend([{"role": "student", "text": question}, {"role": "ai", "text": answer}])
@@ -196,16 +230,29 @@ def _answer_question(question: str, history: list[dict[str, str]]) -> None:
     try:
         with st.spinner("Дыбыстап жатырмын…"):
             speech = client.audio.speech.create(
-                model="gpt-4o-mini-tts", voice="nova", input=answer[:3900], response_format="mp3"
+                model="gpt-4o-mini-tts", voice="nova", input=_spoken_answer(answer)[:3900], response_format="mp3"
             )
             st.session_state["voice_audio"] = speech.content
     except Exception:
         st.session_state["voice_tts_issue"] = True
 
 
-def render_voice_assistant(user: dict) -> None:
-    st.title("🎙️ Дауысты ЖИ көмекші")
-    st.caption("Микрофонға қазақша сұрақ айтыңыз: жазуды тоқтатқанда көмекші өзі жауап береді.")
+def _publish_dialogue(history: list[dict[str, str]]) -> None:
+    audio = st.session_state.get("voice_audio")
+    payload = {
+        "kind": "voice-answer",
+        "history": history[-12:],
+        "audio": "data:audio/mpeg;base64," + base64.b64encode(audio).decode() if audio else "",
+    }
+    serialized = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c")
+    components.html(
+        f"<script>new BroadcastChannel('ai-physics-sanai-voice').postMessage({serialized});</script>",
+        height=0,
+    )
+
+
+@st.fragment
+def _voice_controls() -> None:
     history = st.session_state.setdefault("voice_history", [])
     mode = st.radio("Сұрақ қою тәсілі", ["🎙️ Дауыс", "⌨️ Мәтін"], horizontal=True, key="voice_mode")
     if mode == "🎙️ Дауыс":
@@ -216,14 +263,11 @@ def render_voice_assistant(user: dict) -> None:
             if st.session_state.get("voice_recording_id") != fingerprint:
                 st.session_state["voice_recording_id"] = fingerprint
                 try:
-                    with st.spinner("Қазақша дауысты танып, жауап дайындап жатырмын…"):
-                        question, source = _transcribe_recording(recording)
-                        st.session_state["voice_question_draft"] = question
-                        st.session_state["voice_stt_source"] = source
-                        if question:
-                            _answer_question(question, history)
+                    question, source = _transcribe_recording(recording)
+                    st.session_state["voice_question_draft"] = question
+                    st.session_state["voice_stt_source"] = source
                     if question:
-                        st.rerun()
+                        _answer_question(question, history)
                     else:
                         st.warning("Дауыс танылмады. Жазбаны тыңдап, қайта айтып көріңіз.")
                 except Exception as exc:
@@ -231,12 +275,7 @@ def render_voice_assistant(user: dict) -> None:
                     st.error(f"Дауысты өңдеу мүмкін болмады: {type(exc).__name__}"
                              + (f" (HTTP {status})" if status else "")
                              + ". Жазбаны тыңдап көріңіз.")
-            st.audio(data, format="audio/wav")
-        question = st.session_state.get("voice_question_draft", "")
-        if question:
-            st.caption(f"Танылған сұрақ ({st.session_state.get('voice_stt_source', 'қазақша')}): {question}")
-            if st.session_state.get("voice_stt_source") != "Vosk" and st.session_state.get("voice_vosk_issue"):
-                st.caption(f"Vosk орнына API қолданылды: {st.session_state['voice_vosk_issue']}")
+        # The conversation panel displays the recognized question and reply.
         if st.session_state.pop("voice_tts_issue", False):
             st.warning("Мәтіндік жауап дайын. Дауыстап оқу әзірге қолжетімсіз.")
     else:
@@ -247,8 +286,15 @@ def render_voice_assistant(user: dict) -> None:
             else:
                 try:
                     _answer_question(question.strip(), history)
-                    st.rerun()
                 except Exception as exc:
                     st.error(f"Жауап алу мүмкін болмады: {type(exc).__name__}. Кейін қайта көріңіз.")
+    _publish_dialogue(history)
+
+
+def render_voice_assistant(user: dict) -> None:
+    st.title("🎙️ Дауысты ЖИ көмекші")
+    st.caption("Микрофонға қазақша сұрақ айтыңыз: жазуды тоқтатқанда көмекші өзі жауап береді.")
+    history = st.session_state.setdefault("voice_history", [])
     _avatar(history, st.session_state.get("voice_audio"), _restore_model())
+    _voice_controls()
     _model_upload(user)
