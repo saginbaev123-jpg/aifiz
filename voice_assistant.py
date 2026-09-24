@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
 from html import escape
+from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -11,8 +13,48 @@ from openai import OpenAI
 
 from config import DEFAULT_MODEL
 
+MODEL_STORAGE = Path(os.environ.get("AI_PHYSICS_STORAGE", "/app/storage")) / "sanai" / "model.glb"
+MODEL_PUBLIC = Path(__file__).resolve().parent / "static" / "model.glb"
 
-def _avatar(history: list[dict[str, str]], voice: bytes | None = None) -> None:
+
+def _restore_model() -> bool:
+    """Restore the user-uploaded model after a container restart."""
+    if not MODEL_STORAGE.is_file():
+        return MODEL_PUBLIC.is_file()
+    if not MODEL_PUBLIC.is_file() or MODEL_PUBLIC.stat().st_size != MODEL_STORAGE.stat().st_size:
+        MODEL_PUBLIC.parent.mkdir(parents=True, exist_ok=True)
+        temporary = MODEL_PUBLIC.with_suffix(".tmp")
+        shutil.copyfile(MODEL_STORAGE, temporary)
+        temporary.replace(MODEL_PUBLIC)
+    return True
+
+
+def _model_upload(user: dict) -> None:
+    if user.get("role") != "teacher":
+        return
+    with st.expander("Өзім жасаған 3D кейіпкерді қосу"):
+        st.caption("SanAI.zip архивінің ішіндегі static/model.glb файлын таңдаңыз (архивтің өзін емес).")
+        uploaded = st.file_uploader("3D модель (.glb)", type=["glb"], key="sanai_model_file")
+        if uploaded and st.button("3D кейіпкерді сақтау", key="sanai_model_save"):
+            if uploaded.size > 110 * 1024 * 1024:
+                st.error("Модель 110 МБ-тан аспауы керек.")
+                return
+            uploaded.seek(0)
+            if uploaded.read(4) != b"glTF":
+                st.error("Бұл жарамды GLB файлы емес.")
+                return
+            uploaded.seek(0)
+            MODEL_STORAGE.parent.mkdir(parents=True, exist_ok=True)
+            temporary = MODEL_STORAGE.with_suffix(".tmp")
+            with temporary.open("wb") as output:
+                shutil.copyfileobj(uploaded, output)
+            temporary.replace(MODEL_STORAGE)
+            _restore_model()
+            st.success("Кейіпкер сақталды. Бет қайта ашылғанда 3D модель көрінеді.")
+            st.rerun()
+
+
+def _avatar(history: list[dict[str, str]], voice: bytes | None = None, has_model: bool = False) -> None:
     # CSS 3D avatar works even when third-party script CDNs are unavailable.
     audio = ("data:audio/mpeg;base64," + base64.b64encode(voice).decode()) if voice else ""
     messages = "".join(
@@ -23,6 +65,8 @@ def _avatar(history: list[dict[str, str]], voice: bytes | None = None) -> None:
 <style>
 *{{box-sizing:border-box}}html,body{{margin:0;background:#09172c;color:white;font:16px sans-serif}}
 #stage{{position:relative;height:560px;overflow:hidden;border-radius:18px;background:linear-gradient(165deg,#191326,#101620 85%);perspective:800px}}
+#stage canvas{{position:absolute;inset:0;display:block}}#stage.model-ready #person,#stage.model-ready #halo{{display:none}}
+#model-status{{position:absolute;bottom:12px;left:12px;color:#bad1df;font-size:13px;z-index:2}}
 #halo{{position:absolute;left:50%;top:47%;width:270px;height:340px;transform:translate(-50%,-50%);border:2px solid #6ceaff44;border-radius:50%;box-shadow:0 0 55px #66dfff55}}
 #person{{position:absolute;left:50%;top:52%;width:210px;height:310px;transform:translate(-50%,-50%) rotateY(-8deg);transform-style:preserve-3d;animation:idle 4s ease-in-out infinite}}
 #hair-back{{position:absolute;left:47px;top:17px;width:120px;height:155px;border-radius:60px 60px 45px 45px;background:linear-gradient(90deg,#151b2c,#3a3045 50%,#141827);box-shadow:10px 8px 16px #0007}}
@@ -47,14 +91,48 @@ def _avatar(history: list[dict[str, str]], voice: bytes | None = None) -> None:
 .message small{{font-size:12px;letter-spacing:.15em;color:#66dce9;font-weight:bold}}
 .message p{{margin:8px 0 0;white-space:pre-wrap}}
 @media(max-width:650px){{.scene{{grid-template-columns:1fr;height:auto}}#stage{{height:390px}}.dialogue{{height:240px}}}}
-</style><div class="scene"><div id="stage"><div id="halo"></div><div id="person"><div id="hair-back"></div><div id="neck"></div><div id="arm1"></div><div id="arm2"></div><div id="torso"></div><div id="shirt"></div><div id="face"></div><div id="fringe"></div><div id="eye1" class="eye"></div><div id="eye2" class="eye"></div><div id="mouth"></div><div id="atom">⚛</div></div></div><div class="dialogue"><h3>ДИАЛОГ</h3><div class="thread">{messages}</div></div></div>
+</style><div class="scene"><div id="stage"><div id="model-status"></div><div id="halo"></div><div id="person"><div id="hair-back"></div><div id="neck"></div><div id="arm1"></div><div id="arm2"></div><div id="torso"></div><div id="shirt"></div><div id="face"></div><div id="fringe"></div><div id="eye1" class="eye"></div><div id="eye2" class="eye"></div><div id="mouth"></div><div id="atom">⚛</div></div></div><div class="dialogue"><h3>ДИАЛОГ</h3><div class="thread">{messages}</div></div></div>
 <div style="text-align:center"><button id="speak" {'disabled' if not voice else ''}>▶ Жауапты тыңдау</button></div>
 
 <script>
 const stage=document.querySelector('#stage'),btn=document.querySelector('#speak');
-btn.addEventListener('click',()=>{{const sound=new Audio('{audio}');btn.disabled=true;stage.classList.add('talk');
-const stop=()=>{{stage.classList.remove('talk');btn.disabled=false}};
+btn.addEventListener('click',()=>{{const sound=new Audio('{audio}');btn.disabled=true;stage.classList.add('talk');window.sanaiTalk=true;
+const stop=()=>{{stage.classList.remove('talk');btn.disabled=false;window.sanaiTalk=false}};
 sound.onended=stop;sound.onerror=stop;sound.play().catch(stop);}});
+</script>
+<script type="module">
+if ({'true' if has_model else 'false'}) {{
+ const status=document.querySelector('#model-status');status.textContent='3D кейіпкер жүктелуде…';
+ try {{
+  const THREE=await import('https://unpkg.com/three@0.160.0/build/three.module.js');
+  const {{GLTFLoader}}=await import('https://unpkg.com/three@0.160.0/examples/jsm/loaders/GLTFLoader.js');
+  const scene=new THREE.Scene(), camera=new THREE.PerspectiveCamera(38,1,.01,100);
+  const renderer=new THREE.WebGLRenderer({{antialias:true,alpha:true}});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;
+  const area=document.querySelector('#stage');area.prepend(renderer.domElement);
+  scene.add(new THREE.HemisphereLight(0xffffff,0x556380,2.7));
+  const light=new THREE.DirectionalLight(0xffffff,2.1);light.position.set(2,5,4);scene.add(light);
+  new GLTFLoader().load('/app/static/model.glb', gltf=>{{
+   const model=gltf.scene;scene.add(model);
+   const bounds=new THREE.Box3().setFromObject(model), size=bounds.getSize(new THREE.Vector3()), center=bounds.getCenter(new THREE.Vector3());
+   model.position.sub(center);model.scale.setScalar(3.6/Math.max(size.y,.001));
+   camera.position.set(0,0,6.7);camera.lookAt(0,0,0);
+   area.classList.add('model-ready');status.textContent='';
+   const mixer=gltf.animations.length?new THREE.AnimationMixer(model):null;
+   if(mixer)mixer.clipAction(gltf.animations[0]).play();
+   const clock=new THREE.Clock(), mouths=[];
+   model.traverse(obj=>{{if(obj.isMesh && obj.morphTargetDictionary){{
+    for(const [name,index] of Object.entries(obj.morphTargetDictionary)){{
+     if(/mouthopen|jawopen|viseme_aa/i.test(name))mouths.push([obj,index]);
+    }}
+   }}}});
+   function frame(){{requestAnimationFrame(frame);if(mixer)mixer.update(clock.getDelta());
+    for(const [mesh,index] of mouths)mesh.morphTargetInfluences[index]=window.sanaiTalk?Math.abs(Math.sin(performance.now()*.015))*.55:0;
+    const width=area.clientWidth,height=area.clientHeight;renderer.setSize(width,height,false);camera.aspect=width/height;camera.updateProjectionMatrix();renderer.render(scene,camera);}}
+   frame();
+  }}, undefined, ()=>{{status.textContent='3D модель ашылмады. Сұрақ қою жұмыс істейді.';}});
+ }}catch(error){{status.textContent='3D бейнесі жүктелмеді. Сұрақ қою жұмыс істейді.';}}
+}}
 </script></html>""", height=635, scrolling=True)
 
 
@@ -63,7 +141,8 @@ def render_voice_assistant(user: dict) -> None:
     st.caption("Физика сұрағын дауыспен немесе мәтінмен қойыңыз. Жауапты тыңдай аласыз.")
     history = st.session_state.setdefault("voice_history", [])
     voice = st.session_state.get("voice_audio")
-    _avatar(history, voice)
+    _avatar(history, voice, _restore_model())
+    _model_upload(user)
     mode = st.radio("Сұрақ қою тәсілі", ["🎙️ Дауыс", "⌨️ Мәтін"], horizontal=True, key="voice_mode")
     if mode == "🎙️ Дауыс":
         st.caption("Микрофонды басып, сұрақты айтыңыз. Жазба аяқталған соң «Жауап алу» басыңыз.")
