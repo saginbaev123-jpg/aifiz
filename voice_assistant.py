@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import os
 import shutil
 from html import escape
@@ -52,6 +53,19 @@ def _model_upload(user: dict) -> None:
             _restore_model()
             st.success("Кейіпкер сақталды. Бет қайта ашылғанда 3D модель көрінеді.")
             st.rerun()
+
+
+def _transcribe_recording(client: OpenAI, recording) -> str:
+    data = recording.getvalue()
+    if len(data) > 24 * 1024 * 1024:
+        raise ValueError("Дыбыс файлы тым үлкен. Қысқалау сұрақ айтыңыз.")
+    transcript = client.audio.transcriptions.create(
+        model="gpt-4o-transcribe",
+        file=("question.wav", data, "audio/wav"),
+        language="kk",
+        prompt="Физика туралы қазақша әңгіме. Мысалы: Ньютон заңдары, электр тогы, Архимед күші.",
+    )
+    return transcript.text.strip()
 
 
 def _avatar(history: list[dict[str, str]], voice: bytes | None = None, has_model: bool = False) -> None:
@@ -146,9 +160,30 @@ def render_voice_assistant(user: dict) -> None:
     _model_upload(user)
     mode = st.radio("Сұрақ қою тәсілі", ["🎙️ Дауыс", "⌨️ Мәтін"], horizontal=True, key="voice_mode")
     if mode == "🎙️ Дауыс":
-        st.caption("Микрофонды басып, сұрақты айтыңыз. Жазба аяқталған соң «Жауап алу» басыңыз.")
-        recording = st.audio_input("Микрофон", key="voice_mic")
-        typed = ""
+        st.caption("Микрофонға рұқсат беріңіз → жазуды бастаңыз → тоқтатыңыз → «Дауысты тану» басыңыз.")
+        recording = st.audio_input("Микрофон", sample_rate=16000, key="voice_mic")
+        if recording:
+            data = recording.getvalue()
+            fingerprint = hashlib.sha256(data).hexdigest()
+            if st.session_state.get("voice_recording_id") != fingerprint:
+                st.session_state["voice_recording_id"] = fingerprint
+                st.session_state["voice_question_draft"] = ""
+            st.audio(data, format="audio/wav")
+            if st.button("Дауысты тану", key="voice_transcribe"):
+                api_key = os.environ.get("OPENAI_API_KEY", "")
+                if not api_key:
+                    st.error("Railway Variables ішіндегі OPENAI_API_KEY табылмады.")
+                else:
+                    try:
+                        with st.spinner("Қазақша дауысты танып жатырмын…"):
+                            st.session_state["voice_question_draft"] = _transcribe_recording(
+                                OpenAI(api_key=api_key, timeout=60), recording
+                            )
+                        if not st.session_state["voice_question_draft"]:
+                            st.warning("Сөйлеу анық естілмеді. Жазбаны тыңдап, қайта айтып көріңіз.")
+                    except Exception as exc:
+                        st.error(f"Дауысты тану сәтсіз аяқталды: {type(exc).__name__}. Жазбаны тексеріңіз.")
+        typed = st.text_area("Танылған сұрақ (қате болса түзетіңіз)", key="voice_question_draft", height=90)
     else:
         recording = None
         typed = st.text_input("Физика сұрағыңызды жазыңыз", key="voice_question")
@@ -157,26 +192,12 @@ def render_voice_assistant(user: dict) -> None:
         if not api_key:
             st.error("Дауысты көмекшіге арналған API кілті орнатылмаған.")
             return
-        if not recording and not typed.strip():
-            st.warning("Алдымен сұрақ айтыңыз немесе жазыңыз.")
+        if not typed.strip():
+            st.warning("Алдымен «Дауысты тану» басыңыз немесе сұрақты мәтінмен жазыңыз.")
             return
         try:
             client = OpenAI(api_key=api_key, timeout=45)
             question = typed.strip()
-            if recording and not question:
-                data = recording.getvalue()
-                if len(data) > 24 * 1024 * 1024:
-                    st.error("Дыбыс файлы тым үлкен. Қысқарақ сұрақ жазыңыз.")
-                    return
-                with st.spinner("Дауысты мәтінге айналдырып жатырмын…"):
-                    transcript = client.audio.transcriptions.create(
-                        model="gpt-4o-mini-transcribe", file=("question.wav", data, "audio/wav"),
-                        prompt="Қазақ тіліндегі физика пәні бойынша сұрақ.",
-                    )
-                    question = transcript.text.strip()
-            if not question:
-                st.warning("Сұрақты ажырата алмадым. Қайта айтып көріңіз.")
-                return
             st.caption(f"Сұрақ: {question}")
             with st.spinner("Жауап дайындалуда…"):
                 response = client.responses.create(
