@@ -128,9 +128,11 @@ if ({'true' if has_model else 'false'}) {{
   scene.add(new THREE.HemisphereLight(0xffffff,0x556380,2.7));
   const light=new THREE.DirectionalLight(0xffffff,2.1);light.position.set(2,5,4);scene.add(light);
   new GLTFLoader().load('/app/static/model.glb', gltf=>{{
-   const model=gltf.scene;scene.add(model);
+   const model=gltf.scene, pivot=new THREE.Group();scene.add(pivot);pivot.add(model);
+   // Keep the GLB's own transforms intact: this model has a rotated, negative-scale root.
    const bounds=new THREE.Box3().setFromObject(model), size=bounds.getSize(new THREE.Vector3()), center=bounds.getCenter(new THREE.Vector3());
-   model.position.sub(center);model.scale.setScalar(3.6/Math.max(size.y,.001));
+   const scale=3.3/Math.max(size.y,.001);
+   pivot.scale.setScalar(scale);pivot.position.copy(center).multiplyScalar(-scale);
    camera.position.set(0,0,6.7);camera.lookAt(0,0,0);
    area.classList.add('model-ready');status.textContent='';
    const mixer=gltf.animations.length?new THREE.AnimationMixer(model):null;
