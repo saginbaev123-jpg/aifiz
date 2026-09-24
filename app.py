@@ -34,6 +34,7 @@ from ai.tutor import tutor_reply
 from config import ALLOW_USER_API_KEY, APP_MODE, APP_NAME, CLASS_LETTERS, DEFAULT_MODEL, GENERATED_DIR, UPLOAD_DIR, SUPPORTED_GRADES
 from core.content import pisa_bank, question_bank, topics_for_grade
 from core.database import Database
+from auth_session import restore_user, sign_in, sign_out
 from core.online_test_choices import online_test_choices
 from rag.document_loader import chunk_text, extract_text
 from rag.retrieval import format_context, retrieve
@@ -227,6 +228,8 @@ def init_state() -> None:
     for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
+    if not st.session_state["user"]:
+        restore_user(DB)
 
 
 def ai_client() -> AIClient:
@@ -479,8 +482,7 @@ def auth_screen() -> None:
             if ok:
                 user = DB.authenticate(username, password)
                 if user:
-                    st.session_state.user = user
-                    st.rerun()
+                    sign_in(DB, user)
                 else:
                     st.error("Логин немесе құпиясөз дұрыс емес.")
         with tab2:
@@ -539,17 +541,16 @@ def sidebar() -> str:
     initials = "".join(x[:1] for x in user["full_name"].split()[:2]).upper() or "AI"
     st.sidebar.markdown(f"<div class='profile-chip'><div class='profile-avatar'>{escape(initials)}</div><div><div class='profile-name'>{escape(user['full_name'])}</div><div class='profile-role'>{escape(role_text)}</div></div></div>", unsafe_allow_html=True)
     if user["role"] == "student":
-        pages = ["Басты бет", "Диагностика", "Адаптивті оқу", "Тапсырмалар", "Функционалдық сауаттылық және PISA", "Қатемен жұмыс", "ЖИ мұғалім", "Прогресс", "Профиль", "Баптаулар"]
+        pages = ["Басты бет", "Диагностика", "Адаптивті оқу", "Тапсырмалар", "Функционалдық сауаттылық және PISA", "Қатемен жұмыс", "ЖИ мұғалім", "Дауысты ЖИ көмекші", "Прогресс", "Профиль", "Баптаулар"]
     else:
-        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
+        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Дауысты ЖИ көмекші", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
     page = st.sidebar.radio("Навигация", pages, label_visibility="collapsed", key="nav_page")
     st.sidebar.divider()
     st.sidebar.caption("Физика — әлемді түсінудің кілті")
     st.sidebar.caption(f"Жүйе нұсқасы: {APP_BUILD}")
     if st.sidebar.button("↪  Жүйеден шығу", use_container_width=True):
-        st.session_state.user = None
-        st.session_state.current_task = None
-        st.rerun()
+        sign_out(DB)
+        st.stop()
     return page
 
 
@@ -2510,6 +2511,9 @@ def run() -> None:
         elif page == "Функционалдық сауаттылық және PISA": page_pisa(user)
         elif page == "Қатемен жұмыс": page_errors(user)
         elif page == "ЖИ мұғалім": page_tutor(user)
+        elif page == "Дауысты ЖИ көмекші":
+            from voice_assistant import render_voice_assistant
+            render_voice_assistant(user)
         elif page == "Прогресс": page_progress(user)
         elif page == "Профиль": page_profile(user)
         elif page == "Баптаулар": page_settings()
@@ -2520,6 +2524,9 @@ def run() -> None:
         elif page == "Сынып тапсырмалары": page_teacher_assignments(user)
         elif page == "Функционалдық сауаттылық және PISA": page_teacher_pisa(user)
         elif page == "Мұғалім ЖИ ассистенті": page_teacher_assistant(user)
+        elif page == "Дауысты ЖИ көмекші":
+            from voice_assistant import render_voice_assistant
+            render_voice_assistant(user)
         elif page == "Материалдар": page_materials(user)
         elif page == "Тапсырма генераторы": page_generator(user)
         elif page == "Баптаулар": page_settings()

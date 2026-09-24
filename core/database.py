@@ -1,3 +1,6 @@
+Warning: truncated output (original token count: 20097)
+Total output lines: 1566
+
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +11,7 @@ import secrets
 import sqlite3
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -70,6 +73,15 @@ class Database:
             class_letter TEXT,
             created_at TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS auth_sessions (
+            token_hash TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
 
         CREATE TABLE IF NOT EXISTS classes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -508,6 +520,36 @@ class Database:
             return dict(row)
         return None
 
+    def create_auth_session(self, user_id: int, days: int = 7) -> str:
+        """Persist an opaque browser token; never store the raw token in the database."""
+        token = secrets.token_urlsafe(32)
+        now = datetime.now(timezone.utc)
+        with self.connect() as con:
+            con.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (now.isoformat(),))
+            con.execute(
+                "INSERT INTO auth_sessions(token_hash,user_id,expires_at,created_at) VALUES(?,?,?,?)",
+                (hashlib.sha256(token.encode()).hexdigest(), user_id,
+                 (now + timedelta(days=days)).isoformat(), now.isoformat()),
+            )
+        return token
+
+    def user_from_auth_session(self, token: str) -> dict[str, Any] | None:
+        if not token or len(token) > 256:
+            return None
+        with self.connect() as con:
+            row = con.execute(
+                """SELECT u.* FROM auth_sessions s JOIN users u ON u.id=s.user_id
+                   WHERE s.token_hash=? AND s.expires_at>?""",
+                (hashlib.sha256(token.encode()).hexdigest(), utc_now()),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def revoke_auth_session(self, token: str) -> None:
+        if token and len(token) <= 256:
+            with self.connect() as con:
+                con.execute("DELETE FROM auth_sessions WHERE token_hash=?",
+                            (hashlib.sha256(token.encode()).hexdigest(),))
+
     def get_user(self, user_id: int) -> dict[str, Any] | None:
         with self.connect() as con:
             row = con.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
@@ -661,309 +703,7 @@ class Database:
         with self.connect() as con:
             cur = con.execute(
                 """INSERT INTO diagnostic_runs(student_id,grade,total,correct,percent,topic_json,created_at,focus_topic,phase)
-                   VALUES(?,?,?,?,?,?,?,?,?)""",
-                (student_id, grade, total, correct, percent, json.dumps(topic_stats, ensure_ascii=False), utc_now(), focus_topic, phase),
-            )
-            return int(cur.lastrowid)
-
-    def diagnostic_history(self, student_id: int) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute(
-                "SELECT * FROM diagnostic_runs WHERE student_id=? ORDER BY id DESC", (student_id,)
-            ).fetchall()
-        out = []
-        for r in rows:
-            d = dict(r)
-            d["topic_json"] = json.loads(d["topic_json"])
-            out.append(d)
-        return out
-
-    def record_mistake(self, student_id: int, topic: str, mistake_type: str, description: str) -> None:
-        with self.connect() as con:
-            row = con.execute(
-                """SELECT * FROM mistakes WHERE student_id=? AND topic=? AND mistake_type=? AND resolved=0""",
-                (student_id, topic, mistake_type),
-            ).fetchone()
-            if row:
-                con.execute(
-                    "UPDATE mistakes SET frequency=frequency+1, description=?, last_seen=? WHERE id=?",
-                    (description, utc_now(), row["id"]),
-                )
-            else:
-                con.execute(
-                    """INSERT INTO mistakes(student_id,topic,mistake_type,description,frequency,resolved,last_seen)
-                       VALUES(?,?,?,?,1,0,?)""",
-                    (student_id, topic, mistake_type, description, utc_now()),
-                )
-
-    def get_mistakes(self, student_id: int, unresolved_only: bool = True) -> list[dict[str, Any]]:
-        q = "SELECT * FROM mistakes WHERE student_id=?"
-        if unresolved_only:
-            q += " AND resolved=0"
-        q += " ORDER BY frequency DESC, id DESC"
-        with self.connect() as con:
-            rows = con.execute(q, (student_id,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def resolve_mistake(self, mistake_id: int, student_id: int, *, teacher_override: bool = False) -> bool:
-        with self.connect() as con:
-            mistake = con.execute("SELECT * FROM mistakes WHERE id=? AND student_id=? AND resolved=0", (mistake_id, student_id)).fetchone()
-            if not mistake:
-                return False
-            if not teacher_override:
-                passed = con.execute(
-                    """SELECT 1 FROM attempts WHERE student_id=? AND activity_type='adaptive'
-                       AND topic=? AND is_correct=1 AND created_at>=? ORDER BY id DESC LIMIT 1""",
-                    (student_id, mistake["topic"], mistake["last_seen"]),
-                ).fetchone()
-                if not passed:
-                    return False
-            con.execute("UPDATE mistakes SET resolved=1 WHERE id=? AND student_id=?", (mistake_id, student_id))
-            return True
-
-    def get_review_state(self, student_id: int, topic: str) -> dict[str, Any] | None:
-        with self.connect() as con:
-            row = con.execute("SELECT * FROM review_state WHERE student_id=? AND topic=?", (student_id, topic)).fetchone()
-        return dict(row) if row else None
-
-    def upsert_review_state(self, student_id: int, topic: str, state: dict[str, Any]) -> None:
-        with self.connect() as con:
-            con.execute(
-                """INSERT INTO review_state(student_id,topic,easiness,interval_days,repetition_count,next_review,last_quality,last_reviewed)
-                   VALUES(?,?,?,?,?,?,?,?)
-                   ON CONFLICT(student_id,topic) DO UPDATE SET
-                     easiness=excluded.easiness, interval_days=excluded.interval_days,
-                     repetition_count=excluded.repetition_count, next_review=excluded.next_review,
-                     last_quality=excluded.last_quality, last_reviewed=excluded.last_reviewed""",
-                (
-                    student_id, topic, state["easiness"], state["interval_days"], state["repetition_count"],
-                    state["next_review"], state["last_quality"], state["last_reviewed"],
-                ),
-            )
-
-    def all_review_states(self, student_id: int) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute("SELECT * FROM review_state WHERE student_id=?", (student_id,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def add_chat(self, student_id: int, role: str, content: str, topic: str | None = None) -> None:
-        with self.connect() as con:
-            con.execute(
-                "INSERT INTO chats(student_id,role,content,topic,created_at) VALUES(?,?,?,?,?)",
-                (student_id, role, content, topic, utc_now()),
-            )
-
-    def chat_history(self, student_id: int, limit: int = 20) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute(
-                "SELECT * FROM chats WHERE student_id=? ORDER BY id DESC LIMIT ?", (student_id, limit)
-            ).fetchall()
-        return [dict(r) for r in reversed(rows)]
-
-    def clear_chat(self, student_id: int) -> None:
-        with self.connect() as con:
-            con.execute("DELETE FROM chats WHERE student_id=?", (student_id,))
-
-    # Unified multimodal assistant persistence. Every method verifies ownership;
-    # callers cannot access another user's conversation by changing an id.
-    def create_conversation(self, user_id: int, role: str, title: str = "Жаңа чат") -> int:
-        if role not in {"teacher", "student"}:
-            raise ValueError("Қолжетімсіз рөл")
-        stamp = utc_now()
-        with self.connect() as con:
-            user = con.execute("SELECT role FROM users WHERE id=?", (user_id,)).fetchone()
-            if not user or user["role"] != role:
-                raise PermissionError("Бұл әрекетке рұқсат жоқ")
-            cur = con.execute(
-                "INSERT INTO conversations(user_id,role,title,created_at,updated_at) VALUES(?,?,?,?,?)",
-                (user_id, role, (title or "Жаңа чат").strip()[:120], stamp, stamp),
-            )
-            return int(cur.lastrowid)
-
-    def conversations(self, user_id: int) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute(
-                "SELECT * FROM conversations WHERE user_id=? ORDER BY updated_at DESC, id DESC", (user_id,)
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def conversation(self, conversation_id: int, user_id: int) -> dict[str, Any] | None:
-        with self.connect() as con:
-            row = con.execute(
-                "SELECT * FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def rename_conversation(self, conversation_id: int, user_id: int, title: str) -> None:
-        clean = title.strip()[:120]
-        if not clean:
-            raise ValueError("Чат атауы бос болмауы керек")
-        with self.connect() as con:
-            cur = con.execute(
-                "UPDATE conversations SET title=?,updated_at=? WHERE id=? AND user_id=?",
-                (clean, utc_now(), conversation_id, user_id),
-            )
-            if cur.rowcount != 1:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-
-    def delete_conversation(self, conversation_id: int, user_id: int) -> None:
-        with self.connect() as con:
-            cur = con.execute("DELETE FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id))
-            if cur.rowcount != 1:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-
-    def add_message(self, conversation_id: int, user_id: int, sender: str, text: str, status: str = "completed") -> int:
-        if sender not in {"user", "assistant", "system"}:
-            raise ValueError("Хабарлама авторы дұрыс емес")
-        with self.connect() as con:
-            owned = con.execute("SELECT id,title FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)).fetchone()
-            if not owned:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-            stamp = utc_now()
-            cur = con.execute(
-                "INSERT INTO messages(conversation_id,sender,text,status,created_at) VALUES(?,?,?,?,?)",
-                (conversation_id, sender, text, status, stamp),
-            )
-            if sender == "user" and owned["title"] == "Жаңа чат":
-                title = re.sub(r"\s+", " ", text).strip()[:56] or "Жаңа чат"
-                con.execute("UPDATE conversations SET title=?,updated_at=? WHERE id=?", (title, stamp, conversation_id))
-            else:
-                con.execute("UPDATE conversations SET updated_at=? WHERE id=?", (stamp, conversation_id))
-            return int(cur.lastrowid)
-
-    def messages(self, conversation_id: int, user_id: int, limit: int = 100) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            owned = con.execute("SELECT id FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)).fetchone()
-            if not owned:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-            rows = con.execute(
-                "SELECT * FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT ?", (conversation_id, limit)
-            ).fetchall()
-        return [dict(r) for r in reversed(rows)]
-
-    def add_attachment(self, message_id: int, user_id: int, filename: str, mime_type: str, file_path: str, file_size: int) -> int:
-        with self.connect() as con:
-            owned = con.execute(
-                """SELECT m.id FROM messages m JOIN conversations c ON c.id=m.conversation_id
-                   WHERE m.id=? AND c.user_id=?""", (message_id, user_id)
-            ).fetchone()
-            if not owned:
-                raise PermissionError("Бұл файлға рұқсат жоқ")
-            cur = con.execute(
-                "INSERT INTO attachments(message_id,filename,mime_type,file_path,file_size,created_at) VALUES(?,?,?,?,?,?)",
-                (message_id, filename, mime_type, file_path, int(file_size), utc_now()),
-            )
-            return int(cur.lastrowid)
-
-    def add_generated_file(self, user_id: int, conversation_id: int, filename: str, file_type: str, path: str, metadata: dict[str, Any] | None = None) -> int:
-        with self.connect() as con:
-            owned = con.execute("SELECT id FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)).fetchone()
-            if not owned:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-            cur = con.execute(
-                "INSERT INTO generated_files(filename,type,path,creator,conversation_id,metadata_json,created_at) VALUES(?,?,?,?,?,?,?)",
-                (filename, file_type, path, user_id, conversation_id, json.dumps(metadata or {}, ensure_ascii=False), utc_now()),
-            )
-            return int(cur.lastrowid)
-
-    def generated_files(self, conversation_id: int, user_id: int) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute(
-                """SELECT g.* FROM generated_files g JOIN conversations c ON c.id=g.conversation_id
-                   WHERE g.conversation_id=? AND c.user_id=? ORDER BY g.id""", (conversation_id, user_id)
-            ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
-            result.append(item)
-        return result
-
-    def record_tool_call(self, conversation_id: int, user_id: int, tool_name: str, arguments: dict[str, Any], status: str, duration_ms: int | None = None, result_reference: str | None = None) -> int:
-        with self.connect() as con:
-            owned = con.execute("SELECT id FROM conversations WHERE id=? AND user_id=?", (conversation_id, user_id)).fetchone()
-            if not owned:
-                raise PermissionError("Бұл чатқа рұқсат жоқ")
-            cur = con.execute(
-                "INSERT INTO tool_calls(conversation_id,tool_name,arguments_json,status,result_reference,duration_ms,created_at) VALUES(?,?,?,?,?,?,?)",
-                (conversation_id, tool_name, json.dumps(arguments, ensure_ascii=False), status, result_reference, duration_ms, utc_now()),
-            )
-            return int(cur.lastrowid)
-
-    def add_document(self, teacher_id: int, filename: str, title: str, chunks: list[str]) -> int:
-        with self.connect() as con:
-            cur = con.execute(
-                "INSERT INTO documents(teacher_id,filename,title,created_at) VALUES(?,?,?,?)",
-                (teacher_id, filename, title, utc_now()),
-            )
-            did = int(cur.lastrowid)
-            for i, chunk in enumerate(chunks):
-                con.execute(
-                    "INSERT INTO document_chunks(document_id,chunk_index,content) VALUES(?,?,?)",
-                    (did, i, chunk),
-                )
-        return did
-
-    def list_documents(self, teacher_id: int | None = None) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            if teacher_id is None:
-                rows = con.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
-            else:
-                rows = con.execute("SELECT * FROM documents WHERE teacher_id=? ORDER BY id DESC", (teacher_id,)).fetchall()
-        return [dict(r) for r in rows]
-
-    def delete_document(self, document_id: int, teacher_id: int) -> None:
-        with self.connect() as con:
-            con.execute("DELETE FROM documents WHERE id=? AND teacher_id=?", (document_id, teacher_id))
-
-    def all_chunks(self) -> list[dict[str, Any]]:
-        with self.connect() as con:
-            rows = con.execute(
-                """SELECT dc.id, dc.content, dc.chunk_index, d.title, d.filename, d.id AS document_id
-                   FROM document_chunks dc JOIN documents d ON d.id=dc.document_id"""
-            ).fetchall()
-        return [dict(r) for r in rows]
-
-    def assign_document_to_classes(self, document_id: int, teacher_id: int, class_ids: list[int]) -> None:
-        """Bind a teacher document to owned classes so RAG never leaks across classes."""
-        unique_ids = sorted({int(x) for x in class_ids})
-        with self.connect() as con:
-            doc = con.execute(
-                "SELECT id FROM documents WHERE id=? AND teacher_id=?", (document_id, teacher_id)
-            ).fetchone()
-            if not doc:
-                raise ValueError("Материал табылмады немесе сізге тиесілі емес")
-            con.execute("DELETE FROM document_classes WHERE document_id=?", (document_id,))
-            for class_id in unique_ids:
-                owned = con.execute(
-                    "SELECT id FROM classes WHERE id=? AND teacher_id=?", (class_id, teacher_id)
-                ).fetchone()
-                if not owned:
-                    raise ValueError("Таңдалған сынып мұғалімге тиесілі емес")
-                con.execute(
-                    "INSERT OR IGNORE INTO document_classes(document_id,class_id) VALUES(?,?)",
-                    (document_id, class_id),
-                )
-
-    def document_class_ids(self, document_id: int, teacher_id: int) -> list[int]:
-        with self.connect() as con:
-            rows = con.execute(
-                """SELECT dc.class_id FROM document_classes dc
-                   JOIN documents d ON d.id=dc.document_id
-                   WHERE dc.document_id=? AND d.teacher_id=? ORDER BY dc.class_id""",
-                (document_id, teacher_id),
-            ).fetchall()
-        return [int(r["class_id"]) for r in rows]
-
-    def accessible_chunks_for_student(self, student_id: int) -> list[dict[str, Any]]:
-        """Return only RAG chunks explicitly assigned to classes the student belongs to."""
-        with self.connect() as con:
-            rows = con.execute(
-                """SELECT DISTINCT dc.id, dc.content, dc.chunk_index, d.title, d.filename, d.id AS document_id
-                   FROM document_chunks dc
-                   JOIN documents d ON d.id=dc.document_id
-                   JOIN document_classes dcl ON dcl.document_id=d.id
-                   JOIN class_members cm ON cm.class_id=dcl.class_id
+                   VALUES(?,?,?,?,?,?,?,?…4097 tokens truncated…dcl.class_id
                    WHERE cm.student_id=?
                    ORDER BY d.id DESC, dc.chunk_index""",
                 (student_id,),
