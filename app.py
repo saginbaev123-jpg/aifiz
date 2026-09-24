@@ -29,7 +29,7 @@ from adaptive.spaced_repetition import due_topics, next_state, quality_from_resu
 from ai.error_analyzer import analyze_error
 from ai.assessment import numeric_answer_matches
 from ai.openai_client import AIClient
-from ai.question_generator import clean_descriptors, generate_assignment_tasks, generate_descriptors, generate_diagnostic, generate_pisa, generate_task
+from ai.question_generator import clean_descriptors, student_safe_descriptors, generate_assignment_tasks, generate_descriptors, generate_diagnostic, generate_pisa, generate_task
 from ai.tutor import tutor_reply
 from config import ALLOW_USER_API_KEY, APP_MODE, APP_NAME, CLASS_LETTERS, DEFAULT_MODEL, GENERATED_DIR, UPLOAD_DIR, SUPPORTED_GRADES
 from core.content import pisa_bank, question_bank, topics_for_grade
@@ -1734,7 +1734,7 @@ def page_student_assignments(user: dict[str, Any]) -> None:
         task = item["task"]
         st.markdown(f"#### {n}-тапсырма")
         st.markdown(normalize_math(task.get('question','')))
-        descriptors = clean_descriptors(task.get("descriptors"))
+        descriptors = student_safe_descriptors(task.get("descriptors"), task.get("answer", ""))
         if descriptors:
             rubric = pd.DataFrame([
                 {"№": i, "Дескриптор": d["description"], "Балл": d["points"]}

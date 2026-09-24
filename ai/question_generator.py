@@ -32,6 +32,25 @@ def clean_descriptors(value: Any) -> list[dict[str, Any]]:
     return result
 
 
+def student_safe_descriptors(value: Any, answer: str) -> list[dict[str, Any]]:
+    """Hide the exact answer in a rubric while retaining its scoring steps."""
+    descriptors = clean_descriptors(value)
+    answer = str(answer or "").strip()
+    if not answer:
+        return descriptors
+    # Numeric task answers are deliberately stored separately from the rubric.
+    # Match the whole number only, including decimal comma/dot alternatives.
+    variants = {answer, answer.replace(".", ","), answer.replace(",", ".")}
+    if NUMBER.fullmatch(answer):
+        pattern = re.compile(r"(?<![\d.,])(?:" + "|".join(re.escape(v) for v in sorted(variants, key=len, reverse=True)) + r")(?![\d.,])")
+    else:
+        pattern = re.compile(re.escape(answer), re.IGNORECASE)
+    return [{"description": ("Жауаптың мәні мен өлшем бірлігін дұрыс анықтайды."
+                             if pattern.search(d["description"]) else d["description"]),
+             "points": d["points"]}
+            for d in descriptors]
+
+
 def generate_descriptors(ai: AIClient, grade: int, question: str, answer: str, solution: str, goal: str = "") -> list[dict[str, Any]]:
     """Propose a point rubric for a teacher-written task; never invent one offline."""
     if not ai.available or not question.strip():
@@ -41,12 +60,13 @@ def generate_descriptors(ai: AIClient, grade: int, question: str, answer: str, s
             "Сен физика мұғалімісің. Бір нақты тапсырмаға тексерілетін, бірін-бірі қайталамайтын дескрипторлар мен бүтін баллдар құр. Тек JSON объект бер.",
             f"Сынып: {grade}\nСұрақ: {question}\nДұрыс жауап: {answer}\nШешуі: {solution}\nОқу мақсаты: {goal}\n"
             'JSON: {"descriptors":[{"description":"Оқушы орындайтын нақты қадам", "points":1}]}. '
-            "Формула, есептеу, жауап пен өлшем бірлігін тапсырмаға сәйкес бөлек бағала; қажет емес талап қоспа.",
+            "Формула, есептеу, жауап пен өлшем бірлігін тапсырмаға сәйкес бөлек бағала; қажет емес талап қоспа. "
+            "Дескриптор оқушыға көрсетіледі: дұрыс жауаптың нақты санын не дайын шешімді жазба.",
         )
     except Exception:
         logger.exception("Descriptor generation failed")
         return []
-    return clean_descriptors(data.get("descriptors")) if isinstance(data, dict) else []
+    return student_safe_descriptors(data.get("descriptors"), answer) if isinstance(data, dict) else []
 
 
 def _clean_task(data: dict[str, Any], grade: int, topic: str, level: str) -> dict[str, Any] | None:
@@ -79,7 +99,7 @@ def _clean_task(data: dict[str, Any], grade: int, topic: str, level: str) -> dic
         "options": options,
         "answer": answer,
         "solution": solution,
-        "descriptors": clean_descriptors(data.get("descriptors")),
+        "descriptors": student_safe_descriptors(data.get("descriptors"), answer),
         "descriptor_basis": [q, answer, solution],
         "error_hint": str(data.get("error_hint") or "CONCEPT_ERROR").strip(),
         "source": "openai",

@@ -12,7 +12,7 @@ try:
 except ModuleNotFoundError:
     sys.modules["dotenv"] = types.SimpleNamespace(load_dotenv=lambda **kwargs: None)
 
-from ai.question_generator import clean_descriptors, generate_descriptors
+from ai.question_generator import clean_descriptors, generate_descriptors, student_safe_descriptors
 
 
 class DescriptorFlow(unittest.TestCase):
@@ -25,6 +25,20 @@ class DescriptorFlow(unittest.TestCase):
         self.assertEqual(sum(d["points"] for d in generate_descriptors(AI(), 9, "Есеп", "5", "Шешуі")), 3)
         self.assertEqual(clean_descriptors([{"description": "", "points": 1},
                                            {"description": "Жалған", "points": -3}]), [])
+
+    def test_answer_is_hidden_in_new_and_existing_student_rubrics(self):
+        leaked = [{"description": "Соңғы жылдамдықты 17 м/с деп есептейді.", "points": 1},
+                  {"description": "v = v₀ + at формуласын жазады.", "points": 1}]
+        safe = student_safe_descriptors(leaked, "17")
+        self.assertNotIn("17", safe[0]["description"])
+        self.assertIn("v = v₀ + at", safe[1]["description"])
+        self.assertEqual(sum(d["points"] for d in safe), 2)
+
+        class AI:
+            available = True
+            def json(self, *args):
+                return {"descriptors": leaked}
+        self.assertEqual(generate_descriptors(AI(), 9, "Жылдамдықты тап", "17", "v=v₀+at"), safe)
 
     def test_notebook_total_comes_from_confirmed_descriptors(self):
         source = Path(__file__).resolve().parents[1].joinpath("app.py").read_text()
