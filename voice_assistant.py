@@ -57,7 +57,8 @@ def _model_upload(user: dict) -> None:
             st.rerun()
 
 
-def _transcribe_recording(client: OpenAI, recording, engine: str = "GPT") -> str:
+def _transcribe_recording(recording) -> tuple[str, str]:
+    """Try the offline Kazakh model; fall back to the existing API if needed."""
     data = recording.getvalue()
     if len(data) < 1000:
         raise ValueError("Дыбыс жазылмады. Микрофонға рұқсат беріп, қайта жазып көріңіз.")
@@ -69,16 +70,28 @@ def _transcribe_recording(client: OpenAI, recording, engine: str = "GPT") -> str
                 raise ValueError("Жазба тым қысқа. Сұрағыңызды толық айтып, содан кейін тоқтатыңыз.")
     except wave.Error:
         pass
+    try:
+        from vosk_kz import transcribe
+        text = transcribe(data)
+        if text:
+            return text, "Vosk"
+    except Exception as exc:
+        st.session_state["voice_vosk_issue"] = str(exc)[:150] or type(exc).__name__
+
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("Vosk әлі жүктелмеді және OPENAI_API_KEY табылмады")
+    client = OpenAI(api_key=api_key, timeout=60)
     transcript = client.audio.transcriptions.create(
-        model="whisper-1" if engine == "Whisper" else "gpt-4o-transcribe",
-        file=("question.wav", data, "audio/wav"), language="kk",
-        prompt="Ньютон заңдары, электр тогы, Архимед күші, күш, масса, жылдамдық, үдеу.",
+        model="gpt-4o-transcribe", file=("question.wav", data, "audio/wav"),
+        language="kk", prompt="Ньютон заңдары, электр тогы, Архимед күші, күш, масса, жылдамдық, үдеу.",
     )
-    if engine == "GPT" and not transcript.text.strip():
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1", file=("question.wav", data, "audio/wav"), language="kk",
-        )
-    return transcript.text.strip()
+    if transcript.text.strip():
+        return transcript.text.strip(), "GPT"
+    transcript = client.audio.transcriptions.create(
+        model="whisper-1", file=("question.wav", data, "audio/wav"), language="kk",
+    )
+    return transcript.text.strip(), "Whisper"
 
 
 def _avatar(history: list[dict[str, str]], voice: bytes | None = None, has_model: bool = False) -> None:
@@ -164,77 +177,78 @@ if ({'true' if has_model else 'false'}) {{
 </script></html>""", height=635, scrolling=True)
 
 
+def _answer_question(question: str, history: list[dict[str, str]]) -> None:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY орнатылмаған")
+    client = OpenAI(api_key=api_key, timeout=60)
+    with st.spinner("Жауап дайындалуда…"):
+        response = client.responses.create(
+            model=DEFAULT_MODEL,
+            instructions="Сен AI Physics KZ жүйесіндегі физика пәнінің көмекшісісің. Қазақша, түсінікті және қысқа жауап бер. Қауіпті экспериментті үйде жасауға нұсқау берме.",
+            input=question,
+        )
+        answer = response.output_text.strip()
+        if not answer:
+            raise ValueError("ЖИ бос жауап қайтарды")
+    history.extend([{"role": "student", "text": question}, {"role": "ai", "text": answer}])
+    st.session_state["voice_audio"] = None
+    try:
+        with st.spinner("Дыбыстап жатырмын…"):
+            speech = client.audio.speech.create(
+                model="gpt-4o-mini-tts", voice="nova", input=answer[:3900], response_format="mp3"
+            )
+            st.session_state["voice_audio"] = speech.content
+    except Exception:
+        st.session_state["voice_tts_issue"] = True
+
+
 def render_voice_assistant(user: dict) -> None:
     st.title("🎙️ Дауысты ЖИ көмекші")
-    st.caption("Физика сұрағын дауыспен немесе мәтінмен қойыңыз. Жауапты тыңдай аласыз.")
+    st.caption("Микрофонға қазақша сұрақ айтыңыз: жазуды тоқтатқанда көмекші өзі жауап береді.")
     history = st.session_state.setdefault("voice_history", [])
     mode = st.radio("Сұрақ қою тәсілі", ["🎙️ Дауыс", "⌨️ Мәтін"], horizontal=True, key="voice_mode")
     if mode == "🎙️ Дауыс":
-        st.caption("Төмендегі микрофонға рұқсат беріңіз, жазып тоқтатыңыз. Содан кейін «Дауысты тану» басыңыз.")
-        recording = st.audio_input("🎙️ Сұрағыңызды қазақша айтыңыз", sample_rate=16000, key="voice_mic")
-        engine = st.selectbox("Қазақша дауысты тану тәсілі", ["GPT", "Whisper"],
-                              help="Егер бір тәсіл қазақша сөзді қате таныса, екіншісін таңдап, «Дауысты тану» түймесін қайта басыңыз.")
+        recording = st.audio_input("🎙️ Қазақша сұрақ қойыңыз", sample_rate=16000, key="voice_mic")
         if recording:
             data = recording.getvalue()
             fingerprint = hashlib.sha256(data).hexdigest()
             if st.session_state.get("voice_recording_id") != fingerprint:
                 st.session_state["voice_recording_id"] = fingerprint
-                st.session_state["voice_question_draft"] = ""
+                try:
+                    with st.spinner("Қазақша дауысты танып, жауап дайындап жатырмын…"):
+                        question, source = _transcribe_recording(recording)
+                        st.session_state["voice_question_draft"] = question
+                        st.session_state["voice_stt_source"] = source
+                        if question:
+                            _answer_question(question, history)
+                    if question:
+                        st.rerun()
+                    else:
+                        st.warning("Дауыс танылмады. Жазбаны тыңдап, қайта айтып көріңіз.")
+                except Exception as exc:
+                    status = getattr(exc, "status_code", None)
+                    st.error(f"Дауысты өңдеу мүмкін болмады: {type(exc).__name__}"
+                             + (f" (HTTP {status})" if status else "")
+                             + ". Жазбаны тыңдап көріңіз.")
             st.audio(data, format="audio/wav")
-            if st.button("Дауысты тану", key="voice_transcribe"):
-                api_key = os.environ.get("OPENAI_API_KEY", "")
-                if not api_key:
-                    st.error("Railway Variables ішіндегі OPENAI_API_KEY табылмады.")
-                else:
-                    try:
-                        with st.spinner("Қазақша дауысты танып жатырмын…"):
-                            st.session_state["voice_question_draft"] = _transcribe_recording(
-                                OpenAI(api_key=api_key, timeout=60), recording, engine
-                            )
-                        if not st.session_state["voice_question_draft"]:
-                            st.warning("Сөйлеу анық естілмеді. Жазбаны тыңдап, қайта айтып көріңіз.")
-                    except ValueError as exc:
-                        st.error(str(exc))
-                    except Exception as exc:
-                        status = getattr(exc, "status_code", None)
-                        st.error(f"Дауысты тану сәтсіз аяқталды: {type(exc).__name__}"
-                                 + (f" (HTTP {status})" if status else "")
-                                 + ". Микрофон жазбасын тыңдап көріңіз.")
-        typed = st.text_area("Танылған сұрақ (қате болса түзетіңіз)", key="voice_question_draft", height=90)
+        question = st.session_state.get("voice_question_draft", "")
+        if question:
+            st.caption(f"Танылған сұрақ ({st.session_state.get('voice_stt_source', 'қазақша')}): {question}")
+            if st.session_state.get("voice_stt_source") != "Vosk" and st.session_state.get("voice_vosk_issue"):
+                st.caption(f"Vosk орнына API қолданылды: {st.session_state['voice_vosk_issue']}")
+        if st.session_state.pop("voice_tts_issue", False):
+            st.warning("Мәтіндік жауап дайын. Дауыстап оқу әзірге қолжетімсіз.")
     else:
-        recording = None
-        typed = st.text_input("Физика сұрағыңызды жазыңыз", key="voice_question")
-    if st.button("Жауап алу", type="primary", key="voice_submit"):
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            st.error("Дауысты көмекшіге арналған API кілті орнатылмаған.")
-            return
-        if not typed.strip():
-            st.warning("Алдымен «Дауысты тану» басыңыз немесе сұрақты мәтінмен жазыңыз.")
-            return
-        try:
-            client = OpenAI(api_key=api_key, timeout=45)
-            question = typed.strip()
-            st.caption(f"Сұрақ: {question}")
-            with st.spinner("Жауап дайындалуда…"):
-                response = client.responses.create(
-                    model=DEFAULT_MODEL,
-                    instructions="Сен AI Physics KZ жүйесіндегі физика пәнінің көмекшісісің. Қазақша, түсінікті және қысқа жауап бер. Қауіпті экспериментті үйде жасауға нұсқау берме.",
-                    input=question,
-                )
-                answer = response.output_text.strip()
-                if not answer:
-                    raise ValueError("ЖИ бос жауап қайтарды")
-            history.extend([{"role": "student", "text": question}, {"role": "ai", "text": answer}])
-            st.session_state["voice_audio"] = None
-            try:
-                with st.spinner("Дыбыстап жатырмын…"):
-                    speech = client.audio.speech.create(model="gpt-4o-mini-tts",voice="nova",input=answer[:3900],response_format="mp3")
-                    st.session_state["voice_audio"] = speech.content
-            except Exception:
-                st.info("Мәтіндік жауап дайын. Дауыстап оқу әзірге қолжетімсіз.")
-            st.rerun()
-        except Exception as exc:
-            st.error(f"Жауап алу мүмкін болмады: {type(exc).__name__}. Кейін қайта көріңіз.")
+        question = st.text_input("Физика сұрағыңызды жазыңыз", key="voice_question")
+        if st.button("Жауап алу", type="primary", key="voice_submit"):
+            if not question.strip():
+                st.warning("Алдымен сұрақ жазыңыз.")
+            else:
+                try:
+                    _answer_question(question.strip(), history)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Жауап алу мүмкін болмады: {type(exc).__name__}. Кейін қайта көріңіз.")
     _avatar(history, st.session_state.get("voice_audio"), _restore_model())
     _model_upload(user)
