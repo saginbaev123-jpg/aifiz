@@ -100,6 +100,7 @@ btn.addEventListener('click',()=>{{const sound=new Audio('{audio}');btn.disabled
 const stop=()=>{{stage.classList.remove('talk');btn.disabled=false;window.sanaiTalk=false}};
 sound.onended=stop;sound.onerror=stop;sound.play().catch(stop);}});
 </script>
+<script type="importmap">{{"imports":{{"three":"https://unpkg.com/three@0.160.0/build/three.module.js"}}}}</script>
 <script type="module">
 if ({'true' if has_model else 'false'}) {{
  const status=document.querySelector('#model-status');status.textContent='3D кейіпкер жүктелуде…';
