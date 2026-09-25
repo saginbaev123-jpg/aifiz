@@ -98,6 +98,15 @@ class Database:
             FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS motion_submissions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id INTEGER NOT NULL,
+            answers_json TEXT NOT NULL,
+            submitted_at TEXT NOT NULL,
+            FOREIGN KEY(student_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_motion_submissions_student ON motion_submissions(student_id, id);
+
         CREATE TABLE IF NOT EXISTS mastery (
             student_id INTEGER NOT NULL,
             grade INTEGER NOT NULL,
@@ -609,6 +618,34 @@ class Database:
                 (student_id,),
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def save_motion_submission(self, student_id: int, answers: dict[str, Any]) -> int:
+        with self.connect() as con:
+            student = con.execute("SELECT id FROM users WHERE id=? AND role='student'", (student_id,)).fetchone()
+            if student is None:
+                raise ValueError("Оқушы аккаунты табылмады")
+            cur = con.execute(
+                "INSERT INTO motion_submissions(student_id, answers_json, submitted_at) VALUES(?,?,?)",
+                (student_id, json.dumps(answers, ensure_ascii=False), utc_now()),
+            )
+            return int(cur.lastrowid)
+
+    def student_motion_submissions(self, student_id: int) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("SELECT * FROM motion_submissions WHERE student_id=? ORDER BY id DESC", (student_id,)).fetchall()
+        return [{**dict(row), "answers": json.loads(row["answers_json"])} for row in rows]
+
+    def teacher_motion_submissions(self, teacher_id: int) -> list[dict[str, Any]]:
+        with self.connect() as con:
+            rows = con.execute("""SELECT ms.*, u.full_name, u.username,
+                       GROUP_CONCAT(DISTINCT c.name) AS class_names
+                       FROM motion_submissions ms
+                       JOIN users u ON u.id=ms.student_id
+                       JOIN class_members cm ON cm.student_id=ms.student_id
+                       JOIN classes c ON c.id=cm.class_id AND c.teacher_id=?
+                       WHERE EXISTS (SELECT 1 FROM users t WHERE t.id=? AND t.role='teacher')
+                       GROUP BY ms.id ORDER BY ms.id DESC""", (teacher_id, teacher_id)).fetchall()
+        return [{**dict(row), "answers": json.loads(row["answers_json"])} for row in rows]
 
     def class_students(self, class_id: int) -> list[dict[str, Any]]:
         with self.connect() as con:
