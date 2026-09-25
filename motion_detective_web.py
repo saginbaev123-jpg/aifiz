@@ -12,6 +12,8 @@ from html import escape
 import plotly.graph_objects as go
 import streamlit as st
 
+from core.database import Database
+
 MOVERS = (
     ("Жаяу жүргінші", 1.5, "#2474cb"),
     ("Велосипедші", 5.0, "#eb8d25"),
@@ -63,6 +65,7 @@ def _init_state(user: dict) -> None:
         "motion_last_tick": time.monotonic(), "motion_prediction": None,
         "motion_revealed": False, "motion_speed_feedback": "",
         "motion_convert_feedback": "", "motion_conclusion_feedback": "",
+        "motion_speed_record": None, "motion_convert_record": None,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -79,6 +82,7 @@ def _reset_prediction() -> None:
     state.motion_prediction = None
     state.motion_revealed = False
     state.motion_conclusion_feedback = ""
+    state.motion_sent = False
 
 
 def _track_html(seconds: float, bike_speed: float) -> str:
@@ -170,7 +174,7 @@ def _motion_stage() -> None:
                  hide_index=True, width="stretch")
 
 
-def _tasks() -> None:
+def _tasks(user: dict, db: Database) -> None:
     s = st.session_state
     st.subheader("Өз мәндеріңізбен есептеңіз")
     st.markdown("##### 1. Жылдамдықты табу")
@@ -185,6 +189,9 @@ def _tasks() -> None:
         submitted = st.form_submit_button("Жылдамдықты тексеру")
     if submitted:
         expected = speed_from_distance(float(path), float(seconds))
+        s.motion_speed_record = {"path": float(path), "seconds": float(seconds),
+                                 "answer": float(answer), "correct": near(float(answer), expected)}
+        s.motion_sent = False
         s.motion_speed_feedback = (f"Дұрыс! {path:g} м / {seconds:g} с = {expected:g} м/с."
                                    if near(float(answer), expected) else
                                    f"Жолды уақытқа бөліңіз: {path:g} м / {seconds:g} с = ?")
@@ -203,6 +210,9 @@ def _tasks() -> None:
     if submitted_convert:
         to_kmh = direction.startswith("м/с")
         expected = convert_speed(float(start_value), to_kmh)
+        s.motion_convert_record = {"direction": direction, "value": float(start_value),
+                                   "answer": float(converted_answer), "correct": near(float(converted_answer), expected)}
+        s.motion_sent = False
         s.motion_convert_feedback = ("Дұрыс! Түрлендіру орындалды." if near(float(converted_answer), expected)
                                      else ("3,6-ға көбейтіңіз." if to_kmh else "3,6-ға бөліңіз."))
     if s.motion_convert_feedback:
@@ -233,6 +243,7 @@ def _tasks() -> None:
             s.motion_revealed = False
             s.motion_playing = False
             s.motion_time = 0.0
+            s.motion_sent = False
             st.rerun()
     with col_check:
         if st.button("Болжамды тексеру", key="motion_verify_prediction", width="stretch",
@@ -246,6 +257,9 @@ def _tasks() -> None:
     if s.motion_revealed:
         expected = distance(speed, target)
         st.write(f"**Тексеру:** s = v × t = {speed:g} м/с × {target} с = **{expected:g} м**.")
+        st.markdown("**Велосипедшінің жолының уақытқа тәуелділігі**")
+        st.plotly_chart(_graph("Велосипедші", speed, MOVERS[1][2], float(target), MAX_TIME),
+                        width="stretch", config={"displayModeBar": False}, key="motion_result_graph")
         if near(float(s.motion_prediction), expected):
             st.success("Болжам модельдік нәтижемен сәйкес келді.")
         else:
@@ -264,6 +278,53 @@ def _tasks() -> None:
                 s.motion_conclusion_feedback = "Негізгі сандар келтірілді. Түсіндірменің мағынасын мұғаліммен талқылаңыз."
         if s.motion_conclusion_feedback:
             st.info(s.motion_conclusion_feedback)
+
+    if user.get("role") == "student":
+        st.markdown("#### Жұмысты мұғалімге жіберу")
+        if s.get("motion_sent"):
+            st.success("Жауаптарыңыз мұғалімге жіберілді. Кейін қайта орындап, жаңа нұсқаны жібере аласыз.")
+        speed_record = s.motion_speed_record
+        convert_record = s.motion_convert_record
+        speed_current = speed_record is not None and (speed_record["path"], speed_record["seconds"], speed_record["answer"]) == (float(path), float(seconds), float(answer))
+        convert_current = convert_record is not None and (convert_record["direction"], convert_record["value"], convert_record["answer"]) == (direction, float(start_value), float(converted_answer))
+        conclusion = str(s.get("motion_conclusion", "")).strip()
+        ready = bool(speed_current and convert_current and s.motion_revealed and conclusion and db.student_classes(int(user["id"])))
+        if not ready:
+            st.caption("Екі есепті тексеріңіз, болжамды тексеріп, қорытынды жазыңыз және мұғалім сыныбына тіркеліңіз.")
+        if st.button("Мұғалімге жіберу", disabled=not ready or bool(s.get("motion_sent")), key="motion_send"):
+            payload = {"speed": speed_record, "conversion": convert_record,
+                       "prediction": {"speed": speed, "reference": reference, "target": target,
+                                      "answer": float(s.motion_prediction),
+                                      "correct": near(float(s.motion_prediction), distance(speed, target))},
+                       "conclusion": conclusion}
+            db.save_motion_submission(int(user["id"]), payload)
+            s.motion_sent = True
+            st.rerun()
+
+
+def render_motion_answers(user: dict, db: Database) -> None:
+    if user.get("role") != "teacher":
+        st.error("Бұл бөлім тек мұғалімге арналған.")
+        return
+    st.title("Оқушы жауаптары · Қозғалыс детективі")
+    rows = db.teacher_motion_submissions(int(user["id"]))
+    if not rows:
+        st.info("Сіздің сыныптарыңыздан әзірге жіберілген жауап жоқ.")
+        return
+    st.dataframe([{"Оқушы": row["full_name"], "Логин": row["username"],
+                   "Сынып": row["class_names"], "Жіберілген уақыты (UTC)": row["submitted_at"],
+                   "Дұрыс жауаптар": sum(bool(row["answers"][key]["correct"]) for key in ("speed", "conversion", "prediction"))}
+                  for row in rows], hide_index=True, width="stretch")
+    for row in rows:
+        answers = row["answers"]
+        with st.expander(f"{row['full_name']} · {row['class_names']} · {row['submitted_at']} · №{row['id']}"):
+            a, b, c = answers["speed"], answers["conversion"], answers["prediction"]
+            st.table([
+                {"Тапсырма": "Жылдамдық", "Берілгені": f"{a['path']:g} м, {a['seconds']:g} с", "Оқушы жауабы": f"{a['answer']:g} м/с", "Нәтиже": "Дұрыс" if a["correct"] else "Қате"},
+                {"Тапсырма": "Түрлендіру", "Берілгені": f"{b['value']:g}, {b['direction']}", "Оқушы жауабы": f"{b['answer']:g}", "Нәтиже": "Дұрыс" if b["correct"] else "Қате"},
+                {"Тапсырма": "Болжам", "Берілгені": f"{c['speed']:g} м/с, {c['target']} с", "Оқушы жауабы": f"{c['answer']:g} м", "Нәтиже": "Дұрыс" if c["correct"] else "Қате"},
+            ])
+            st.write("**Оқушы қорытындысы:**", answers["conclusion"])
 
 
 def _teacher_view() -> None:
@@ -290,7 +351,7 @@ def _teacher_view() -> None:
     ])
 
 
-def render_motion_detective(user: dict) -> None:
+def render_motion_detective(user: dict, db: Database) -> None:
     """Use the existing site authentication and role data."""
     _init_state(user)
     st.title("🔎 Қозғалыс детективі: кім жылдамырақ?")
@@ -301,7 +362,7 @@ def render_motion_detective(user: dict) -> None:
     else:
         tab_lab, tab_tasks = st.tabs(["Қозғалыс моделі", "Оқушы тапсырмалары"])
     with tab_tasks:
-        _tasks()
+        _tasks(user, db)
     with tab_lab:
         _motion_stage()
     if user.get("role") == "teacher":
