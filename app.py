@@ -543,7 +543,7 @@ def sidebar() -> str:
     if user["role"] == "student":
         pages = ["Басты бет", "Диагностика", "Адаптивті оқу", "Тапсырмалар", "Қозғалыс детективі", "Функционалдық сауаттылық және PISA", "Қатемен жұмыс", "ЖИ мұғалім", "Дауысты ЖИ көмекші", "Прогресс", "Профиль", "Баптаулар"]
     else:
-        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Қозғалыс детективі", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Дауысты ЖИ көмекші", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
+        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Қозғалыс детективі", "Оқушы жауаптары", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Дауысты ЖИ көмекші", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
     page = st.sidebar.radio("Навигация", pages, label_visibility="collapsed", key="nav_page")
     st.sidebar.divider()
     st.sidebar.caption("Физика — әлемді түсінудің кілті")
@@ -2519,7 +2519,7 @@ def run() -> None:
         elif page == "Тапсырмалар": page_student_assignments(user)
         elif page == "Қозғалыс детективі":
             from motion_detective_web import render_motion_detective
-            render_motion_detective(user)
+            render_motion_detective(user, DB)
         elif page == "Функционалдық сауаттылық және PISA": page_pisa(user)
         elif page == "Қатемен жұмыс": page_errors(user)
         elif page == "ЖИ мұғалім": page_tutor(user)
@@ -2536,7 +2536,10 @@ def run() -> None:
         elif page == "Сынып тапсырмалары": page_teacher_assignments(user)
         elif page == "Қозғалыс детективі":
             from motion_detective_web import render_motion_detective
-            render_motion_detective(user)
+            render_motion_detective(user, DB)
+        elif page == "Оқушы жауаптары":
+            from motion_detective_web import render_motion_answers
+            render_motion_answers(user, DB)
         elif page == "Функционалдық сауаттылық және PISA": page_teacher_pisa(user)
         elif page == "Мұғалім ЖИ ассистенті": page_teacher_assistant(user)
         elif page == "Дауысты ЖИ көмекші":
