@@ -541,9 +541,9 @@ def sidebar() -> str:
     initials = "".join(x[:1] for x in user["full_name"].split()[:2]).upper() or "AI"
     st.sidebar.markdown(f"<div class='profile-chip'><div class='profile-avatar'>{escape(initials)}</div><div><div class='profile-name'>{escape(user['full_name'])}</div><div class='profile-role'>{escape(role_text)}</div></div></div>", unsafe_allow_html=True)
     if user["role"] == "student":
-        pages = ["Басты бет", "Диагностика", "Адаптивті оқу", "Тапсырмалар", "Функционалдық сауаттылық және PISA", "Қатемен жұмыс", "ЖИ мұғалім", "Дауысты ЖИ көмекші", "Прогресс", "Профиль", "Баптаулар"]
+        pages = ["Басты бет", "Диагностика", "Адаптивті оқу", "Тапсырмалар", "Қозғалыс детективі", "Функционалдық сауаттылық және PISA", "Қатемен жұмыс", "ЖИ мұғалім", "Дауысты ЖИ көмекші", "Прогресс", "Профиль", "Баптаулар"]
     else:
-        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Дауысты ЖИ көмекші", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
+        pages = ["Мұғалім панелі", "Сыныптар", "Оқушылар", "Сынып тапсырмалары", "Қозғалыс детективі", "Функционалдық сауаттылық және PISA", "Мұғалім ЖИ ассистенті", "Дауысты ЖИ көмекші", "Материалдар", "Тапсырма генераторы", "Баптаулар"]
     page = st.sidebar.radio("Навигация", pages, label_visibility="collapsed", key="nav_page")
     st.sidebar.divider()
     st.sidebar.caption("Физика — әлемді түсінудің кілті")
@@ -2517,6 +2517,9 @@ def run() -> None:
         elif page == "Диагностика": page_diagnostic(user)
         elif page == "Адаптивті оқу": page_adaptive(user)
         elif page == "Тапсырмалар": page_student_assignments(user)
+        elif page == "Қозғалыс детективі":
+            from motion_detective_web import render_motion_detective
+            render_motion_detective(user)
         elif page == "Функционалдық сауаттылық және PISA": page_pisa(user)
         elif page == "Қатемен жұмыс": page_errors(user)
         elif page == "ЖИ мұғалім": page_tutor(user)
@@ -2531,6 +2534,9 @@ def run() -> None:
         elif page == "Сыныптар": page_classes(user)
         elif page == "Оқушылар": page_teacher_students(user)
         elif page == "Сынып тапсырмалары": page_teacher_assignments(user)
+        elif page == "Қозғалыс детективі":
+            from motion_detective_web import render_motion_detective
+            render_motion_detective(user)
         elif page == "Функционалдық сауаттылық және PISA": page_teacher_pisa(user)
         elif page == "Мұғалім ЖИ ассистенті": page_teacher_assistant(user)
         elif page == "Дауысты ЖИ көмекші":
