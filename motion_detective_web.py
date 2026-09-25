@@ -44,14 +44,6 @@ def near(value: float, expected: float) -> bool:
     return abs(value - expected) <= 0.05
 
 
-def experiment_rows(bike_speed: float, reference: int, target: int, revealed: bool) -> list[dict]:
-    times = sorted(set(list(range(0, MAX_TIME + 1, 10)) + [reference, target])) if revealed else sorted(set([0, min(10, reference), reference]))
-    return [{"Уақыт, с": t,
-             "Жаяу жүргінші, м": distance(MOVERS[0][1], t),
-             "Велосипедші, м": distance(bike_speed, t),
-             "Самокатшы, м": distance(MOVERS[2][1], t)} for t in times]
-
-
 def _init_state(user: dict) -> None:
     owner = user.get("id")
     if st.session_state.get("motion_owner") != owner:
@@ -168,10 +160,6 @@ def _motion_stage() -> None:
                             width="stretch", config={"displayModeBar": False},
                             key=f"motion_graph_{name}")
     st.caption("Көлденең ось — уақыт (с), тік ось — жол (м). Сызық неғұрлым тік болса, нысан соғұрлым жылдам қозғалады.")
-    st.markdown("#### Кесте: s = v × t")
-    st.dataframe(experiment_rows(float(s.motion_speed), int(s.motion_ref),
-                                 int(s.motion_target), bool(s.motion_revealed)),
-                 hide_index=True, width="stretch")
 
 
 def _tasks(user: dict, db: Database) -> None:
